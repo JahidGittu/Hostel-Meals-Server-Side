@@ -193,6 +193,29 @@ async function run() {
 
 
 
+        // POST: Add a Meal
+        app.post('/meals', verifyFBToken, verifyAdmin, async (req, res) => {
+
+            try {
+                const meal = req.body;
+                meal.rating = 0;
+                meal.likes = 0;
+                meal.reviews_count = 0;
+                meal.postTime = new Date().toISOString();
+
+                const result = await mealsCollection.insertOne(meal);
+
+                res.status(201).send({ insertedId: result.insertedId });
+            } catch (error) {
+                console.error('Error adding meal:', error);
+                res.status(500).send({ message: 'Failed to add meal', error });
+            }
+        });
+
+
+
+
+
 
     } finally {
         // Ensures that the client will close when you finish/error
