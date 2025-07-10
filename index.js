@@ -55,6 +55,28 @@ async function run() {
 
 
 
+        // Send a ping to confirm a successful connection
+        await client.db("admin").command({ ping: 1 });
+        console.log("Pinged your deployment. You successfully connected to MongoDB!");
+
+
+
+        // Check if user is admin
+        app.get('/users/admin/:email', verifyFBToken, async (req, res) => {
+            const email = req.params.email;
+
+            if (req.decoded.email !== email) {
+                return res.status(403).send({ isAdmin: false });
+            }
+
+            const user = await usersCollection.findOne({ email });
+
+            res.send({ isAdmin: user?.role === 'admin' });
+        });
+
+
+
+
 
         // Example: POST /users to save user info
         app.post('/users', async (req, res) => {
@@ -96,6 +118,7 @@ async function run() {
                 res.status(500).send({ message: 'Internal Server Error' });
             }
         });
+
 
 
 
