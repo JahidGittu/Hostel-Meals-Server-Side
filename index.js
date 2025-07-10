@@ -77,6 +77,78 @@ async function run() {
 
 
 
+        // users Search 
+        app.get("/users/search", verifyFBToken, verifyAdmin, async (req, res) => {
+            const query = req.query.query;
+            if (!query) {
+                return res.status(400).send({ message: "Missing search query" });
+            }
+
+            const regex = new RegExp(query, "i");
+
+            try {
+                const users = await usersCollection
+                    .find({
+                        $or: [
+                            { name: { $regex: regex } },
+                            { email: { $regex: new RegExp(`^${query}`, "i") } },
+                            { email: { $regex: new RegExp(`^${query}@`, "i") } },
+                            {
+                                $expr: {
+                                    $regexMatch: {
+                                        input: { $arrayElemAt: [{ $split: ["$email", "@"] }, 0] },
+                                        regex: regex
+                                    }
+                                }
+                            }
+                        ]
+                    })
+                    .project({ name: 1, email: 1, role: 1, created_At: 1, subscription: 1 })
+                    .limit(10)
+                    .toArray();
+
+                res.send(users);
+            } catch (error) {
+                res.status(500).send({ message: "Search failed", error });
+            }
+        });
+
+
+
+
+
+        // PATCH: Make Admin or Remove Admin
+        app.patch('/users/role/:id', async (req, res) => {
+            const id = req.params.id;
+            const { makeAdmin, requesterEmail } = req.body;
+
+            try {
+                // Step 1: Check if the requester is the super admin
+                if (requesterEmail !== 'code@gittu.com') {
+                    return res.status(403).send({ message: "Only the System admin can update roles." });
+                }
+
+                // Step 2: Prevent removing super admin itself
+                const targetUser = await usersCollection.findOne({ _id: new ObjectId(id) });
+                if (targetUser?.email === 'code@gittu.com' && !makeAdmin) {
+                    return res.status(403).send({ message: "You can't remove the System admin." });
+                }
+
+                // Step 3: Proceed with role update
+                const result = await usersCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    { $set: { role: makeAdmin ? 'admin' : 'user' } }
+                );
+
+                res.send({ success: result.modifiedCount > 0 });
+            } catch (error) {
+                res.status(500).send({ message: 'Role update failed', error });
+            }
+        });
+
+
+
+
 
         // Example: POST /users to save user info
         app.post('/users', async (req, res) => {
@@ -118,9 +190,6 @@ async function run() {
                 res.status(500).send({ message: 'Internal Server Error' });
             }
         });
-
-
-
 
 
 
