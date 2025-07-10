@@ -1,0 +1,119 @@
+const express = require('express');
+const cors = require('cors');
+const admin = require("firebase-admin");
+require('dotenv').config();
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
+
+const app = express();
+const port = process.env.PORT || 5000;
+
+// Middleware
+const corsOptions = {
+    origin: ['http://localhost:5173'],
+    credentials: true, // allow cookies and headers
+};
+
+app.use(cors(corsOptions));
+
+app.use(express.json());
+
+
+
+// Firebase Admin sdk
+
+const serviceAccount = require("./firebase-adminsdk-key.json");
+
+admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount)
+});
+
+
+
+
+// MongoDB client setup
+const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.tks1y5a.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
+
+
+// Create a MongoClient with a MongoClientOptions object to set the Stable API version
+const client = new MongoClient(uri, {
+    serverApi: {
+        version: ServerApiVersion.v1,
+        strict: true,
+        deprecationErrors: true,
+    }
+});
+
+async function run() {
+    try {
+        // Connect the client to the server	(optional starting in v4.7)
+        // await client.connect();
+
+        const db = client.db('Hostel_Management_System');
+        const usersCollection = db.collection('users');
+
+        const mealsCollection = db.collection('meals');
+
+
+
+
+        // Example: POST /users to save user info
+        app.post('/users', async (req, res) => {
+            try {
+                const user = req.body;
+                const email = user.email;
+
+                const userExists = await usersCollection.findOne({ email });
+
+                if (userExists) {
+                    // Update last login time
+                    const updateResult = await usersCollection.updateOne(
+                        { email },
+                        { $set: { last_Log_In: new Date().toISOString() } }
+                    );
+
+                    return res.status(200).send({
+                        message: 'User exists, last login time updated.',
+                        updated: true,
+                        inserted: false
+                    });
+                }
+
+                const newUser = {
+                    ...user,
+                    created_At: new Date().toISOString(),
+                    last_Log_In: new Date().toISOString(),
+                };
+
+                const result = await usersCollection.insertOne(newUser);
+
+                res.status(201).send({
+                    message: 'New user inserted successfully',
+                    inserted: true,
+                    data: result
+                });
+            } catch (error) {
+                console.error('Error adding user:', error);
+                res.status(500).send({ message: 'Internal Server Error' });
+            }
+        });
+
+
+
+
+
+
+    } finally {
+        // Ensures that the client will close when you finish/error
+        // await client.close();
+    }
+}
+run().catch(console.dir);
+
+
+app.get('/', (req, res) => {
+    res.send("🍽️ “The Server Product for You — Now Cooked to Perfection… with Extra Spice!” 🌶️🔥")
+})
+
+app.listen(port, () => {
+    console.log(`Server Running On Port ${port}`)
+})
