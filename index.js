@@ -54,6 +54,46 @@ async function run() {
         const mealsCollection = db.collection('meals');
 
 
+        // Custom Middleware for FirebaseAccessToken
+        const verifyFBToken = async (req, res, next) => {
+            const authHeader = req.headers.authorization;
+            if (!authHeader) {
+                return res.status(401).send({ message: 'unauthorized access' })
+            }
+            const token = authHeader.split(' ')[1];
+            if (!token) {
+                return res.status(401).send({ message: 'unauthorized access' })
+            }
+            // verify the token
+
+            try {
+                const decoded = await admin.auth().verifyIdToken(token)
+                req.decoded = decoded
+
+                next();
+            }
+            catch (err) {
+                return res.status(403).send({ message: 'forbiden access' })
+            }
+        }
+
+
+        const verifyAdmin = async (req, res, next) => {
+            const decodedEmail = req.decoded?.email;
+
+            if (!decodedEmail) {
+                return res.status(401).send({ message: "Unauthorized" });
+            }
+
+            const user = await usersCollection.findOne({ email: decodedEmail });
+
+            if (user?.role !== 'admin') {
+                return res.status(403).send({ message: "Forbidden: Admins only" });
+            }
+
+            next();
+        };
+
 
         // Send a ping to confirm a successful connection
         await client.db("admin").command({ ping: 1 });
