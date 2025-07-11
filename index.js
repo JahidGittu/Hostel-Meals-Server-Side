@@ -3,6 +3,7 @@ const cors = require('cors');
 const admin = require("firebase-admin");
 require('dotenv').config();
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
+const superAdminEmail = process.env.SUPER_ADMIN_EMAIL;
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -14,8 +15,18 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-
 app.use(express.json());
+
+// Logging Middleware
+const logger = (req, res, next) => {
+    const log = `[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`;
+    if (process.env.NODE_ENV !== 'production') {
+        console.log(log);
+    }
+    next();
+};
+
+app.use(logger); // Use it directly
 
 
 
@@ -53,10 +64,13 @@ async function run() {
 
         const mealsCollection = db.collection('meals');
 
+        const upcomingMealsCollection = db.collection('upcoming_meals')
+
 
         // Custom Middleware for FirebaseAccessToken
         const verifyFBToken = async (req, res, next) => {
             const authHeader = req.headers.authorization;
+            console.log("🔐 Incoming Authorization Header:", req.headers.authorization);
             if (!authHeader) {
                 return res.status(401).send({ message: 'unauthorized access' })
             }
@@ -73,8 +87,10 @@ async function run() {
                 next();
             }
             catch (err) {
-                return res.status(403).send({ message: 'forbiden access' })
+                console.error("❌ Token verification failed:", err.message);
+                return res.status(401).send({ message: 'Unauthorized: Invalid token' });
             }
+
         }
 
 
@@ -158,19 +174,19 @@ async function run() {
 
 
         // PATCH: Make Admin or Remove Admin
-        app.patch('/users/role/:id', async (req, res) => {
+        app.patch('/users/role/:id', verifyFBToken, verifyAdmin, async (req, res) => {
             const id = req.params.id;
             const { makeAdmin, requesterEmail } = req.body;
 
             try {
                 // Step 1: Check if the requester is the super admin
-                if (requesterEmail !== 'code@gittu.com') {
+                if (requesterEmail !== superAdminEmail) {
                     return res.status(403).send({ message: "Only the System admin can update roles." });
                 }
 
                 // Step 2: Prevent removing super admin itself
                 const targetUser = await usersCollection.findOne({ _id: new ObjectId(id) });
-                if (targetUser?.email === 'code@gittu.com' && !makeAdmin) {
+                if (targetUser?.email === superAdminEmail && !makeAdmin) {
                     return res.status(403).send({ message: "You can't remove the System admin." });
                 }
 
@@ -185,7 +201,6 @@ async function run() {
                 res.status(500).send({ message: 'Role update failed', error });
             }
         });
-
 
 
 
@@ -253,6 +268,238 @@ async function run() {
         });
 
 
+
+
+        // get meals 
+        app.get('/meals', verifyFBToken, verifyAdmin, async (req, res) => {
+            const sortField = req.query.sort || 'likes';
+            const sortOrder = req.query.order === 'asc' ? 1 : -1;
+            const search = req.query.search || '';
+
+            const query = search ? { title: { $regex: search, $options: 'i' } } : {};
+
+            try {
+                let sortStage = {};
+
+                if (sortField === 'category') {
+                    // custom order mapping
+                    const categoryOrder = {
+                        'Breakfast': 1,
+                        'Lunch': 2,
+                        'Dinner': 3,
+                        'Special Breakfast': 4,
+                        'Special Lunch': 5,
+                        'Special Dinner': 6
+                    };
+
+                    const pipeline = [
+                        { $match: query },
+                        {
+                            $addFields: {
+                                categoryOrder: {
+                                    $switch: {
+                                        branches: Object.entries(categoryOrder).map(([category, order]) => ({
+                                            case: { $eq: ["$category", category] },
+                                            then: order
+                                        })),
+                                        default: 999
+                                    }
+                                }
+                            }
+                        },
+                        { $sort: { categoryOrder: sortOrder } }
+                    ];
+
+                    const meals = await mealsCollection.aggregate(pipeline).toArray();
+                    return res.send(meals);
+                }
+
+                // other sorting (likes, reviews_count, postTime)
+                sortStage[sortField] = sortOrder;
+
+                const meals = await mealsCollection
+                    .find(query)
+                    .sort(sortStage)
+                    .toArray();
+
+                res.send(meals);
+            } catch (error) {
+                res.status(500).send({ message: 'Error fetching meals', error });
+            }
+        });
+
+
+
+
+        // Assuming your existing setup & client/db initialization above
+
+        app.get('/meals-filter-info', async (req, res) => {
+            try {
+                const categoryResult = await mealsCollection.aggregate([
+                    {
+                        $group: {
+                            _id: '$category'
+                        }
+                    },
+                    {
+                        $project: {
+                            _id: 0,
+                            category: '$_id'
+                        }
+                    }
+                ]).toArray();
+                const categories = categoryResult.map(c => c.category);
+
+                const priceStats = await mealsCollection.aggregate([
+                    {
+                        $group: {
+                            _id: null,
+                            minPrice: { $min: '$price' },
+                            maxPrice: { $max: '$price' },
+                        },
+                    },
+                ]).toArray();
+
+                const minPrice = priceStats.length > 0 ? priceStats[0].minPrice : 0;
+                const maxPrice = priceStats.length > 0 ? priceStats[0].maxPrice : 1000;
+
+                res.send({ categories, minPrice, maxPrice });
+            } catch (error) {
+                console.error('Failed to fetch filter info:', error);
+                res.status(500).send({ message: 'Failed to fetch filter info', error });
+            }
+        });
+
+
+
+        // GET Meals for user and admin both
+        app.get('/meals-public', verifyFBToken, async (req, res) => {
+            const {
+                search = '',
+                category,
+                minPrice,
+                maxPrice,
+                page = 1,
+                limit = 10,
+            } = req.query;
+
+            const filter = {};
+
+            if (search) {
+                filter.title = { $regex: search, $options: 'i' };
+            }
+
+            if (category && category !== 'All') {
+                filter.category = category;
+            }
+
+            if (minPrice || maxPrice) {
+                filter.price = {};
+                if (minPrice) filter.price.$gte = Number(minPrice);
+                if (maxPrice) filter.price.$lte = Number(maxPrice);
+            }
+
+            const skip = (parseInt(page) - 1) * parseInt(limit);
+
+            try {
+                const meals = await mealsCollection
+                    .find(filter)
+                    .skip(skip)
+                    .limit(parseInt(limit))
+                    .toArray();
+
+                res.send({ meals });
+            } catch (err) {
+                res.status(500).send({ message: 'Public meal fetch failed', err });
+            }
+        });
+
+
+
+        // delete Meal
+        app.delete('/meals/:id', verifyFBToken, verifyAdmin, async (req, res) => {
+            try {
+                const id = req.params.id;
+                const result = await mealsCollection.deleteOne({ _id: new ObjectId(id) });
+                res.send(result);
+            } catch (error) {
+                res.status(500).send({ message: 'Failed to delete meal' });
+            }
+        });
+
+
+
+        // GET all upcoming meals, sorted by likes
+        app.get('/upcoming-meals', verifyFBToken, verifyAdmin, async (req, res) => {
+            try {
+                const upcoming = await upcomingMealsCollection
+                    .find()
+                    .sort({ likes: -1 })
+                    .toArray();
+
+                res.send(upcoming);
+            } catch (err) {
+                res.status(500).send({ message: 'Failed to fetch upcoming meals', err });
+            }
+        });
+
+
+
+
+
+
+        app.get('/upcoming-meals-public', verifyFBToken, async (req, res) => {
+            try {
+                const meals = await upcomingMealsCollection.find().sort({ likes: -1 }).toArray();
+                res.send(meals);
+            } catch (err) {
+                res.status(500).send({ message: 'Public upcoming meals fetch failed', err });
+            }
+        });
+
+
+
+
+        // Post Up-coming Meals
+        app.post('/upcoming-meals', verifyFBToken, verifyAdmin, async (req, res) => {
+            const meal = req.body;
+            meal.likes = 0;
+            meal.reviews_count = 0;
+            meal.rating = 0;
+            meal.createdAt = new Date().toISOString();
+
+            try {
+                const result = await upcomingMealsCollection.insertOne(meal);
+                res.send({ insertedId: result.insertedId });
+            } catch (err) {
+                res.status(500).send({ message: 'Failed to add upcoming meal', err });
+            }
+        });
+
+
+
+
+        // puslish upcoming meals to main meals collection
+        app.post('/publish-meal/:id', verifyFBToken, verifyAdmin, async (req, res) => {
+            const id = req.params.id;
+
+            try {
+                const meal = await upcomingMealsCollection.findOne({ _id: new ObjectId(id) });
+
+                if (!meal) return res.status(404).send({ message: 'Meal not found' });
+
+                meal.postTime = new Date().toISOString();
+                // Insert to meals collection
+                await mealsCollection.insertOne(meal);
+
+                // Delete from upcoming
+                await upcomingMealsCollection.deleteOne({ _id: new ObjectId(id) });
+
+                res.send({ message: 'Meal published successfully' });
+            } catch (err) {
+                res.status(500).send({ message: 'Publish failed', err });
+            }
+        });
 
 
 
