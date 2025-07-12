@@ -66,6 +66,8 @@ async function run() {
 
         const upcomingMealsCollection = db.collection('upcoming_meals')
 
+        const mealRequestsCollection = db.collection('meal_requests');
+
 
         // Custom Middleware for FirebaseAccessToken
         const verifyFBToken = async (req, res, next) => {
@@ -248,9 +250,23 @@ async function run() {
 
 
 
+        // Get current logged-in user from token
+        app.get('/current/user', verifyFBToken, async (req, res) => {
+            const email = req.decoded.email;
+            try {
+                const user = await usersCollection.findOne({ email });
+                if (!user) return res.status(404).send({ message: 'User not found' });
+                res.send(user);
+            } catch (err) {
+                res.status(500).send({ message: 'Failed to fetch user data', err });
+            }
+        });
+
+
+
+
         // POST: Add a Meal
         app.post('/meals', verifyFBToken, verifyAdmin, async (req, res) => {
-
             try {
                 const meal = req.body;
                 meal.rating = 0;
@@ -266,6 +282,7 @@ async function run() {
                 res.status(500).send({ message: 'Failed to add meal', error });
             }
         });
+
 
 
 
@@ -327,7 +344,6 @@ async function run() {
                 res.status(500).send({ message: 'Error fetching meals', error });
             }
         });
-
 
 
 
@@ -416,6 +432,130 @@ async function run() {
 
 
 
+
+        // GET Single meal by ID
+        app.get('/meals/:id', verifyFBToken, async (req, res) => {
+            const id = req.params.id;
+
+            try {
+                const meal = await mealsCollection.findOne({ _id: new ObjectId(id) });
+                if (!meal) return res.status(404).send({ message: 'Meal not found' });
+                res.send(meal);
+            } catch (error) {
+                res.status(500).send({ message: 'Failed to fetch meal', error });
+            }
+        });
+
+
+
+        // PATCH /meals/like/:id
+        app.patch('/meals/like/:id', verifyFBToken, async (req, res) => {
+            const mealId = req.params.id;
+            const userEmail = req.decoded.email;
+
+            try {
+                const meal = await mealsCollection.findOne({ _id: new ObjectId(mealId) });
+
+                if (!meal) {
+                    return res.status(404).send({ message: 'Meal not found' });
+                }
+
+                const alreadyLiked = meal.likedBy?.includes(userEmail);
+
+                const update = alreadyLiked
+                    ? {
+                        $inc: { likes: -1 },
+                        $pull: { likedBy: userEmail }
+                    }
+                    : {
+                        $inc: { likes: 1 },
+                        $addToSet: { likedBy: userEmail }
+                    };
+
+                const result = await mealsCollection.updateOne(
+                    { _id: new ObjectId(mealId) },
+                    update
+                );
+
+                res.send({ success: result.modifiedCount > 0, liked: !alreadyLiked });
+            } catch (err) {
+                res.status(500).send({ message: 'Failed to toggle like', error: err });
+            }
+        });
+
+
+
+
+
+
+
+
+
+        app.post('/meal-requests', verifyFBToken, async (req, res) => {
+            const { mealId, userEmail, status } = req.body;
+
+            if (!mealId || !userEmail) {
+                return res.status(400).send({ message: 'Missing required fields' });
+            }
+
+            const exists = await mealRequestsCollection.findOne({ mealId, userEmail });
+            if (exists) {
+                return res.status(400).send({ message: 'Already requested' });
+            }
+
+            const result = await mealRequestsCollection.insertOne({
+                mealId,
+                userEmail,
+                status: status || 'pending',
+                requestedAt: new Date().toISOString()
+            });
+
+            res.status(201).send({ message: 'Meal requested', insertedId: result.insertedId });
+        });
+
+
+
+
+
+
+        app.post('/meal-reviews', verifyFBToken, async (req, res) => {
+            const { mealId, email, name, image, review } = req.body;
+
+            if (!mealId || !review || !email || !name) {
+                return res.status(400).send({ message: 'Missing review info' });
+            }
+
+            const reviewDoc = {
+                mealId,
+                email,
+                name,
+                image,
+                review,
+                createdAt: new Date().toISOString()
+            };
+
+            try {
+                const result = await mealsCollection.updateOne(
+                    { _id: new ObjectId(mealId) },
+                    {
+                        $push: { reviews: reviewDoc },
+                        $inc: { reviews_count: 1 }
+                    }
+                );
+
+                if (result.modifiedCount > 0) {
+                    res.send({ message: 'Review added', success: true });
+                } else {
+                    res.status(404).send({ message: 'Meal not found' });
+                }
+            } catch (error) {
+                res.status(500).send({ message: 'Failed to add review', error });
+            }
+        });
+
+
+
+
         // delete Meal
         app.delete('/meals/:id', verifyFBToken, verifyAdmin, async (req, res) => {
             try {
@@ -445,17 +585,120 @@ async function run() {
 
 
 
-
-
-
-        app.get('/upcoming-meals-public', verifyFBToken, async (req, res) => {
+        // ১. ক্যাটাগরি, minPrice, maxPrice ফেরত দিবে (filter info)
+        app.get('/upcoming-meals-filter', async (req, res) => {
             try {
-                const meals = await upcomingMealsCollection.find().sort({ likes: -1 }).toArray();
-                res.send(meals);
+                const categoryResult = await upcomingMealsCollection.aggregate([
+                    { $group: { _id: '$category' } },
+                    { $project: { _id: 0, category: '$_id' } }
+                ]).toArray();
+
+                const categories = categoryResult.map(c => c.category);
+
+                const priceStats = await upcomingMealsCollection.aggregate([
+                    {
+                        $group: {
+                            _id: null,
+                            minPrice: { $min: '$price' },
+                            maxPrice: { $max: '$price' }
+                        }
+                    }
+                ]).toArray();
+
+                const minPrice = priceStats.length > 0 ? priceStats[0].minPrice : 0;
+                const maxPrice = priceStats.length > 0 ? priceStats[0].maxPrice : 1000;
+
+                res.send({ categories, minPrice, maxPrice });
+            } catch (error) {
+                console.error('Failed to fetch upcoming meals filter info:', error);
+                res.status(500).send({ message: 'Failed to fetch filter info', error });
+            }
+        });
+
+
+
+        // ২. সার্চ, ক্যাটাগরি, প্রাইস রেঞ্জ, পেজিনেশনসহ মিলস রিটার্ন করবে + likes দিয়ে sort করবে
+        app.get('/upcoming-meals-public', verifyFBToken, async (req, res) => {
+            const {
+                search = '',
+                category,
+                minPrice,
+                maxPrice,
+                page = 1,
+                limit = 10,
+            } = req.query;
+
+            const filter = {};
+
+            if (search) {
+                filter.title = { $regex: search, $options: 'i' };
+            }
+
+            if (category && category !== 'All') {
+                filter.category = category;
+            }
+
+            if (minPrice || maxPrice) {
+                filter.price = {};
+                if (minPrice) filter.price.$gte = Number(minPrice);
+                if (maxPrice) filter.price.$lte = Number(maxPrice);
+            }
+
+            const skip = (parseInt(page) - 1) * parseInt(limit);
+
+            try {
+                const totalCount = await upcomingMealsCollection.countDocuments(filter);
+
+                const meals = await upcomingMealsCollection
+                    .find(filter)
+                    .sort({ likes: -1 })
+                    .skip(skip)
+                    .limit(parseInt(limit))
+                    .toArray();
+
+                res.send({ meals, totalCount });
             } catch (err) {
                 res.status(500).send({ message: 'Public upcoming meals fetch failed', err });
             }
         });
+
+
+
+        // ৩. Like/Unlike টগল (upcoming meals এর জন্য)
+        app.patch('/upcoming-meals/like/:id', verifyFBToken, async (req, res) => {
+            const mealId = req.params.id;
+            const userEmail = req.decoded.email;
+
+            try {
+                const meal = await upcomingMealsCollection.findOne({ _id: new ObjectId(mealId) });
+
+                if (!meal) {
+                    return res.status(404).send({ message: 'Meal not found' });
+                }
+
+                const alreadyLiked = meal.likedBy?.includes(userEmail);
+
+                const update = alreadyLiked
+                    ? {
+                        $inc: { likes: -1 },
+                        $pull: { likedBy: userEmail }
+                    }
+                    : {
+                        $inc: { likes: 1 },
+                        $addToSet: { likedBy: userEmail }
+                    };
+
+                const result = await upcomingMealsCollection.updateOne(
+                    { _id: new ObjectId(mealId) },
+                    update
+                );
+
+                res.send({ success: result.modifiedCount > 0, liked: !alreadyLiked });
+            } catch (err) {
+                res.status(500).send({ message: 'Failed to toggle like', error: err });
+            }
+        });
+
 
 
 
