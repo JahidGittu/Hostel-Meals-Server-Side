@@ -746,6 +746,36 @@ async function run() {
 
 
 
+        // Count meals & upcoming meals added by current admin
+        app.get('/total-meals', verifyFBToken, verifyAdmin, async (req, res) => {
+            try {
+                const email = req.decoded.email;
+
+                const mealsCount = await mealsCollection.countDocuments({
+                    $or: [
+                        { distributorEmail: email },
+                        { distributor_email: email }
+                    ]
+                });
+
+                const upcomingCount = await upcomingMealsCollection.countDocuments({
+                    $or: [
+                        { distributorEmail: email },
+                        { distributor_email: email }
+                    ]
+                });
+
+                res.send({ mealsCount, upcomingCount });
+
+            } catch (err) {
+                console.error('Failed to count meals by admin:', err);
+                res.status(500).send({ message: 'Failed to count meals', error: err });
+            }
+        });
+
+
+
+
 
     } finally {
         // Ensures that the client will close when you finish/error
