@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const admin = require("firebase-admin");
 require('dotenv').config();
+const stripe = require('stripe')(process.env.STRIPE_PAYMENT_SECRET_KEY);
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const superAdminEmail = process.env.SUPER_ADMIN_EMAIL;
 
@@ -67,6 +68,9 @@ async function run() {
         const upcomingMealsCollection = db.collection('upcoming_meals')
 
         const mealRequestsCollection = db.collection('meal_requests');
+
+        const paymentHistoryCollection = db.collection('payment_history');
+
 
 
         // Custom Middleware for FirebaseAccessToken
@@ -284,9 +288,6 @@ async function run() {
         });
 
 
-
-
-
         // get meals 
         app.get('/meals', verifyFBToken, verifyAdmin, async (req, res) => {
             const sortField = req.query.sort || 'likes';
@@ -346,7 +347,6 @@ async function run() {
         });
 
 
-
         // Assuming your existing setup & client/db initialization above
 
         app.get('/meals-filter-info', async (req, res) => {
@@ -387,9 +387,8 @@ async function run() {
         });
 
 
-
         // GET Meals for user and admin both
-        app.get('/meals-public', verifyFBToken, async (req, res) => {
+        app.get('/meals-public', async (req, res) => {
             const {
                 search = '',
                 category,
@@ -429,9 +428,6 @@ async function run() {
                 res.status(500).send({ message: 'Public meal fetch failed', err });
             }
         });
-
-
-
 
         // GET Single meal by ID
         app.get('/meals/:id', verifyFBToken, async (req, res) => {
@@ -483,14 +479,6 @@ async function run() {
             }
         });
 
-
-
-
-
-
-
-
-
         app.post('/meal-requests', verifyFBToken, async (req, res) => {
             const { mealId, userEmail, status } = req.body;
 
@@ -512,10 +500,6 @@ async function run() {
 
             res.status(201).send({ message: 'Meal requested', insertedId: result.insertedId });
         });
-
-
-
-
 
 
         app.post('/meal-reviews', verifyFBToken, async (req, res) => {
@@ -617,8 +601,8 @@ async function run() {
 
 
 
-        // ২. সার্চ, ক্যাটাগরি, প্রাইস রেঞ্জ, পেজিনেশনসহ মিলস রিটার্ন করবে + likes দিয়ে sort করবে
-        app.get('/upcoming-meals-public', verifyFBToken, async (req, res) => {
+        // সার্চ, ক্যাটাগরি, প্রাইস রেঞ্জ, পেজিনেশনসহ মিলস রিটার্ন করবে + likes দিয়ে sort করবে
+        app.get('/upcoming-meals-public', async (req, res) => {
             const {
                 search = '',
                 category,
@@ -659,6 +643,70 @@ async function run() {
                 res.send({ meals, totalCount });
             } catch (err) {
                 res.status(500).send({ message: 'Public upcoming meals fetch failed', err });
+            }
+        });
+
+
+
+        app.get('/upcoming-meals/:id', verifyFBToken, async (req, res) => {
+            const id = req.params.id;
+
+            try {
+                const meal = await upcomingMealsCollection.findOne({ _id: new ObjectId(id) });
+                if (!meal) return res.status(404).send({ message: 'Upcoming meal not found' });
+                res.send(meal);
+            } catch (error) {
+                res.status(500).send({ message: 'Failed to fetch upcoming meal', error });
+            }
+        });
+
+
+
+        app.delete('/upcoming-meals/:id', verifyFBToken, verifyAdmin, async (req, res) => {
+            try {
+                const id = req.params.id;
+                const result = await upcomingMealsCollection.deleteOne({ _id: new ObjectId(id) });
+                res.send(result);
+            } catch (error) {
+                res.status(500).send({ message: 'Failed to delete upcoming meal' });
+            }
+        });
+
+
+        // POST: Add a review to an upcoming meal
+        app.post('/upcoming-meal-reviews', verifyFBToken, async (req, res) => {
+            const { mealId, email, name, image, review } = req.body;
+
+            if (!mealId || !review || !email || !name) {
+                return res.status(400).send({ message: 'Missing review info' });
+            }
+
+            const reviewDoc = {
+                mealId,
+                email,
+                name,
+                image,
+                review,
+                createdAt: new Date().toISOString(),
+            };
+
+            try {
+                const result = await upcomingMealsCollection.updateOne(
+                    { _id: new ObjectId(mealId) },
+                    {
+                        $push: { reviews: reviewDoc },
+                        $inc: { reviews_count: 1 },
+                    }
+                );
+
+                if (result.modifiedCount > 0) {
+                    res.send({ message: 'Review added', success: true });
+                } else {
+                    res.status(404).send({ message: 'Upcoming meal not found' });
+                }
+            } catch (error) {
+                console.error('Failed to add upcoming meal review:', error);
+                res.status(500).send({ message: 'Failed to add review', error });
             }
         });
 
@@ -774,6 +822,138 @@ async function run() {
         });
 
 
+
+        app.get('/meal-requests', verifyFBToken, async (req, res) => {
+            const userEmail = req.query.userEmail;
+            if (!userEmail) {
+                return res.status(400).send({ message: 'Missing userEmail query parameter' });
+            }
+
+            // টোকেন থেকে ইউজার ইমেইল মিলে কিনা চেক করাও ভাল হবে
+            if (req.decoded.email !== userEmail) {
+                return res.status(403).send({ message: 'Forbidden: You can only access your own requests' });
+            }
+
+            try {
+                const mealRequests = await mealRequestsCollection
+                    .find({ userEmail })
+                    .sort({ requestedAt: -1 })
+                    .toArray();
+
+                res.send(mealRequests);
+            } catch (error) {
+                console.error('Error fetching meal requests:', error);
+                res.status(500).send({ message: 'Internal Server Error' });
+            }
+        });
+
+
+        app.delete('/meal-requests/:id', verifyFBToken, async (req, res) => {
+            const id = req.params.id;
+
+            try {
+                const request = await mealRequestsCollection.findOne({ _id: new ObjectId(id) });
+
+                if (!request) {
+                    return res.status(404).send({ message: 'Meal request not found' });
+                }
+
+                // টোকেনের ইউজার ইমেইল চেক করো যাতে নিজেই শুধু ডিলেট করতে পারে
+                if (req.decoded.email !== request.userEmail) {
+                    return res.status(403).send({ message: 'Forbidden: You can only delete your own requests' });
+                }
+
+                const result = await mealRequestsCollection.deleteOne({ _id: new ObjectId(id) });
+
+                if (result.deletedCount === 1) {
+                    res.send({ success: true, message: 'Meal request cancelled successfully' });
+                } else {
+                    res.status(500).send({ success: false, message: 'Failed to cancel meal request' });
+                }
+            } catch (error) {
+                console.error('Error deleting meal request:', error);
+                res.status(500).send({ message: 'Internal Server Error' });
+            }
+        });
+
+
+
+
+        // checkout apis
+        app.post('/create-payment-intent', verifyFBToken, async (req, res) => {
+            const { packageName, price } = req.body;
+
+            if (!price) {
+                return res.status(400).send({ message: 'Missing price' });
+            }
+
+            try {
+                const paymentIntent = await stripe.paymentIntents.create({
+                    amount: price * 100,
+                    currency: "usd",
+                    payment_method_types: ["card"],
+                });
+
+                res.send({ clientSecret: paymentIntent.client_secret });
+            } catch (error) {
+                console.error('Stripe error:', error);
+                res.status(500).send({ error: 'Payment intent creation failed' });
+            }
+        });
+
+
+
+        app.post('/payments', verifyFBToken, async (req, res) => {
+            const { email, packageName, transactionId, price } = req.body;
+
+            if (!email || !packageName || !transactionId || !price) {
+                return res.status(400).send({ message: 'Missing required payment fields' });
+            }
+
+            try {
+                const user = await usersCollection.findOne({ email });
+
+                if (!user) {
+                    return res.status(404).send({ message: 'User not found' });
+                }
+
+                const paidAt = new Date().toISOString();
+
+                // 1️⃣ Insert into payment_history collection
+                const paymentHistoryDoc = {
+                    userId: user._id,
+                    name: user.name,
+                    email: user.email,
+                    photo: user.photo,
+                    badge: packageName,
+                    price,
+                    transactionId,
+                    packageName,
+                    paidAt,
+                    gateway: "Stripe",
+                    method: "Card",
+                    currency: "USD"
+                };
+
+                await paymentHistoryCollection.insertOne(paymentHistoryDoc);
+
+                // 2️⃣ Update user's subscription & badge
+                await usersCollection.updateOne(
+                    { email },
+                    {
+                        $set: {
+                            subscription: packageName,
+                            badge: packageName
+                        }
+                    }
+                );
+
+                res.send({ message: 'Payment saved successfully', success: true });
+            } catch (err) {
+                console.error('❌ Error saving payment:', err);
+                res.status(500).send({ message: 'Payment saving failed', error: err.message });
+            }
+        });
 
 
 
