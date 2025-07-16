@@ -31,6 +31,12 @@ app.use(logger); // Use it directly
 
 
 
+const decoded = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString('utf8')
+const serviceAccount = JSON.parse(decoded);
+
+
+
+
 // Firebase Admin sdk
 
 const serviceAccount = require("./firebase-adminsdk-key.json");
@@ -120,9 +126,7 @@ async function run() {
         };
 
 
-        // Send a ping to confirm a successful connection
-        await client.db("admin").command({ ping: 1 });
-        console.log("Pinged your deployment. You successfully connected to MongoDB!");
+
 
 
 
@@ -337,20 +341,39 @@ async function run() {
 
 
 
-
-
-
-        // Get current logged-in user from token
         app.get('/current-user', verifyFBToken, async (req, res) => {
-            const email = req.decoded.email;
             try {
+                // এখানে ক্লায়েন্ট থেকে আলাদা ইমেইল আসবে না
+                const email = req.decoded.email.toLowerCase();
+
                 const user = await usersCollection.findOne({ email });
                 if (!user) return res.status(404).send({ message: 'User not found' });
+
                 res.send(user);
             } catch (err) {
+                console.error('Error in /current-user:', err);
                 res.status(500).send({ message: 'Failed to fetch user data', err });
             }
         });
+
+
+
+        //         app.get('/current-user', async (req, res) => {
+        //   try {
+        //     const email = req.query.email;
+        //     if (!email) return res.status(400).send({ message: 'Email is required' });
+
+        //     const user = await usersCollection.findOne({ email: email.toLowerCase() });
+        //     if (!user) return res.status(404).send({ message: 'User not found' });
+
+        //     res.send(user);
+        //   } catch (err) {
+        //     console.error('Error in /current-user:', err);
+        //     res.status(500).send({ message: 'Failed to fetch user data', err });
+        //   }
+        // });
+
+
 
 
 
@@ -614,9 +637,9 @@ async function run() {
 
 
         app.post('/meal-reviews', verifyFBToken, async (req, res) => {
-            const { mealId, email, name, image, review } = req.body;
+            const { mealId, email, name, image, review, rating } = req.body;
 
-            if (!mealId || !review || !email || !name) {
+            if (!mealId || !review || !email || !name || rating === undefined) {
                 return res.status(400).send({ message: 'Missing review info' });
             }
 
@@ -626,6 +649,7 @@ async function run() {
                 name,
                 image,
                 review,
+                rating, // Save user rating
                 createdAt: new Date().toISOString()
             };
 
@@ -647,6 +671,7 @@ async function run() {
                 res.status(500).send({ message: 'Failed to add review', error });
             }
         });
+
 
 
 
@@ -881,6 +906,39 @@ async function run() {
             }
         });
 
+
+        // PATCH: Update rating of upcoming meal
+        app.patch('/upcoming-meals/rating/:id', verifyFBToken, async (req, res) => {
+            const mealId = req.params.id;
+            const { rating } = req.body;
+
+            if (!rating || rating < 1 || rating > 5) {
+                return res.status(400).send({ message: 'Invalid rating value' });
+            }
+
+            try {
+                const meal = await upcomingMealsCollection.findOne({ _id: new ObjectId(mealId) });
+                if (!meal) {
+                    return res.status(404).send({ message: 'Meal not found' });
+                }
+
+                // যদি ডাটাবেজে rating না থাকে, নতুন করে সেট করবে, নাহলে আপডেট করবে
+                const update = { $set: { rating: rating } };
+
+                const result = await upcomingMealsCollection.updateOne(
+                    { _id: new ObjectId(mealId) },
+                    update
+                );
+
+                if (result.modifiedCount > 0) {
+                    res.send({ message: 'Rating updated', success: true });
+                } else {
+                    res.status(500).send({ message: 'Failed to update rating' });
+                }
+            } catch (err) {
+                res.status(500).send({ message: 'Server error', error: err });
+            }
+        });
 
 
 
@@ -1877,7 +1935,7 @@ async function run() {
                 const combinedReviews = [...mealsFeatured, ...upcomingFeatured];
 
                 const topReviews = combinedReviews
-                    .filter(r => r.review && r.review.trim() !== "")  
+                    .filter(r => r.review && r.review.trim() !== "")
                     .sort((a, b) => (b.likes || 0) - (a.likes || 0) || new Date(b.createdAt) - new Date(a.createdAt))
                     .slice(0, 5);
 
@@ -1907,7 +1965,9 @@ async function run() {
             }
         });
 
-
+        // // Send a ping to confirm a successful connection
+        // await client.db("admin").command({ ping: 1 });
+        // console.log("Pinged your deployment. You successfully connected to MongoDB!");
 
     } finally {
         // Ensures that the client will close when you finish/error
