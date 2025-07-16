@@ -69,6 +69,9 @@ async function run() {
 
         const mealRequestsCollection = db.collection('meal_requests');
 
+        const upcomingMealRequestsCollection = db.collection('upcoming_meal_requests');
+
+
         const paymentHistoryCollection = db.collection('payment_history');
 
 
@@ -254,6 +257,54 @@ async function run() {
 
 
 
+        // 🔍 Live Search Meals (title, ingredients, category) from both collections
+        app.get('/search-meals', async (req, res) => {
+            const query = req.query.q?.toLowerCase();
+
+            if (!query) {
+                return res.status(400).send({ message: 'Missing search query' });
+            }
+
+            try {
+                const searchFilter = {
+                    $or: [
+                        { title: { $regex: query, $options: 'i' } },
+                        { ingredients: { $regex: query, $options: 'i' } },
+                        { category: { $regex: query, $options: 'i' } },
+                    ],
+                };
+
+                // Search from meals, project image too (যেখানে image ফিল্ড আছে ধরে নিচ্ছি)
+                const mealResults = await mealsCollection.find(searchFilter)
+                    .project({ _id: 1, title: 1, image: 1 }) // image ফিল্ড যুক্ত করো
+                    .limit(5)
+                    .toArray();
+
+                // Search from upcoming meals, project image too
+                const upcomingResults = await upcomingMealsCollection.find(searchFilter)
+                    .project({ _id: 1, title: 1, image: 1 }) // image ফিল্ড যুক্ত করো
+                    .limit(5)
+                    .toArray();
+
+                // Add type to distinguish which is from where
+                const formattedResults = [
+                    ...mealResults.map(m => ({ ...m, type: 'meal' })),
+                    ...upcomingResults.map(m => ({ ...m, type: 'upcoming' })),
+                ];
+
+                res.send(formattedResults);
+            } catch (error) {
+                console.error('❌ Failed to fetch search suggestions:', error);
+                res.status(500).send({ message: 'Internal Server Error' });
+            }
+        });
+
+
+
+
+
+
+
         // Get current logged-in user from token
         app.get('/current/user', verifyFBToken, async (req, res) => {
             const email = req.decoded.email;
@@ -287,20 +338,18 @@ async function run() {
             }
         });
 
-
-        // get meals 
         app.get('/meals', verifyFBToken, verifyAdmin, async (req, res) => {
             const sortField = req.query.sort || 'likes';
             const sortOrder = req.query.order === 'asc' ? 1 : -1;
             const search = req.query.search || '';
+            const page = parseInt(req.query.page) || 1;
+            const limit = parseInt(req.query.limit) || 10;
+            const skip = (page - 1) * limit;
 
             const query = search ? { title: { $regex: search, $options: 'i' } } : {};
 
             try {
-                let sortStage = {};
-
                 if (sortField === 'category') {
-                    // custom order mapping
                     const categoryOrder = {
                         'Breakfast': 1,
                         'Lunch': 2,
@@ -316,8 +365,8 @@ async function run() {
                             $addFields: {
                                 categoryOrder: {
                                     $switch: {
-                                        branches: Object.entries(categoryOrder).map(([category, order]) => ({
-                                            case: { $eq: ["$category", category] },
+                                        branches: Object.entries(categoryOrder).map(([cat, order]) => ({
+                                            case: { $eq: ["$category", cat] },
                                             then: order
                                         })),
                                         default: 999
@@ -325,22 +374,28 @@ async function run() {
                                 }
                             }
                         },
-                        { $sort: { categoryOrder: sortOrder } }
+                        { $sort: { categoryOrder: sortOrder } },
+                        { $skip: skip },
+                        { $limit: limit }
                     ];
 
+                    const total = await mealsCollection.countDocuments(query);
                     const meals = await mealsCollection.aggregate(pipeline).toArray();
-                    return res.send(meals);
+                    return res.send({ total, data: meals });
                 }
 
-                // other sorting (likes, reviews_count, postTime)
-                sortStage[sortField] = sortOrder;
+                // For likes, reviews_count, postTime
+                const sortStage = { [sortField]: sortOrder };
 
+                const total = await mealsCollection.countDocuments(query);
                 const meals = await mealsCollection
                     .find(query)
                     .sort(sortStage)
+                    .skip(skip)
+                    .limit(limit)
                     .toArray();
 
-                res.send(meals);
+                res.send({ total, data: meals });
             } catch (error) {
                 res.status(500).send({ message: 'Error fetching meals', error });
             }
@@ -387,47 +442,6 @@ async function run() {
         });
 
 
-        // GET Meals for user and admin both
-        app.get('/meals-public', async (req, res) => {
-            const {
-                search = '',
-                category,
-                minPrice,
-                maxPrice,
-                page = 1,
-                limit = 10,
-            } = req.query;
-
-            const filter = {};
-
-            if (search) {
-                filter.title = { $regex: search, $options: 'i' };
-            }
-
-            if (category && category !== 'All') {
-                filter.category = category;
-            }
-
-            if (minPrice || maxPrice) {
-                filter.price = {};
-                if (minPrice) filter.price.$gte = Number(minPrice);
-                if (maxPrice) filter.price.$lte = Number(maxPrice);
-            }
-
-            const skip = (parseInt(page) - 1) * parseInt(limit);
-
-            try {
-                const meals = await mealsCollection
-                    .find(filter)
-                    .skip(skip)
-                    .limit(parseInt(limit))
-                    .toArray();
-
-                res.send({ meals });
-            } catch (err) {
-                res.status(500).send({ message: 'Public meal fetch failed', err });
-            }
-        });
 
         // GET Single meal by ID
         app.get('/meals/:id', verifyFBToken, async (req, res) => {
@@ -479,6 +493,8 @@ async function run() {
             }
         });
 
+
+
         app.post('/meal-requests', verifyFBToken, async (req, res) => {
             const { mealId, userEmail, status } = req.body;
 
@@ -494,12 +510,34 @@ async function run() {
             const result = await mealRequestsCollection.insertOne({
                 mealId,
                 userEmail,
+                type: 'posted',
                 status: status || 'pending',
                 requestedAt: new Date().toISOString()
             });
 
             res.status(201).send({ message: 'Meal requested', insertedId: result.insertedId });
         });
+
+
+
+        app.post('/upcoming-meal-requests', verifyFBToken, async (req, res) => {
+            const { mealId, userEmail, status } = req.body;
+
+            const exists = await upcomingMealRequestsCollection.findOne({ mealId, userEmail });
+            if (exists) return res.status(400).send({ message: 'Already requested' });
+
+            const result = await upcomingMealRequestsCollection.insertOne({
+                mealId,
+                userEmail,
+                type: 'upcoming',
+                status: status || 'pending',
+                requestedAt: new Date().toISOString()
+            });
+
+
+            res.status(201).send({ message: 'Upcoming meal requested', insertedId: result.insertedId });
+        });
+
 
 
         app.post('/meal-reviews', verifyFBToken, async (req, res) => {
@@ -556,16 +594,38 @@ async function run() {
         // GET all upcoming meals, sorted by likes
         app.get('/upcoming-meals', verifyFBToken, verifyAdmin, async (req, res) => {
             try {
+                const page = parseInt(req.query.page) || 1;
+                const limit = parseInt(req.query.limit) || 10;
+                const search = req.query.search || '';
+
+                const skip = (page - 1) * limit;
+
+                // সার্চ কেসে title ফিল্ডে regex দিয়ে খোঁজ
+                const query = search
+                    ? { title: { $regex: search, $options: 'i' } }
+                    : {};
+
+                const total = await upcomingMealsCollection.countDocuments(query);
+
                 const upcoming = await upcomingMealsCollection
-                    .find()
-                    .sort({ likes: -1 })
+                    .find(query)
+                    .sort({ likes: -1 })   // তুমি যেভাবে চেয়েছ তেমন, likes descending
+                    .skip(skip)
+                    .limit(limit)
                     .toArray();
 
-                res.send(upcoming);
+                res.send({
+                    total,
+                    data: upcoming,
+                });
             } catch (err) {
                 res.status(500).send({ message: 'Failed to fetch upcoming meals', err });
             }
         });
+
+
+
+
 
 
 
@@ -601,6 +661,39 @@ async function run() {
 
 
 
+
+        // GET Meals for user and admin both
+        app.get('/meals-public', async (req, res) => {
+            const { search = '', category, minPrice, maxPrice, page = 1, limit = 6 } = req.query;
+            const filter = {};
+
+            if (search) filter.title = { $regex: search, $options: 'i' };
+            if (category && category !== 'All') filter.category = category;
+            if (minPrice || maxPrice) {
+                filter.price = {};
+                if (minPrice) filter.price.$gte = Number(minPrice);
+                if (maxPrice) filter.price.$lte = Number(maxPrice);
+            }
+
+            const skip = (parseInt(page) - 1) * parseInt(limit);
+            try {
+                const totalCount = await mealsCollection.countDocuments(filter);
+                const meals = await mealsCollection
+                    .find(filter)
+                    .skip(skip)
+                    .limit(parseInt(limit))
+                    .toArray();
+
+                const isLast = skip + meals.length >= totalCount;
+                res.send({ meals, totalCount, isLast });
+            } catch (err) {
+                res.status(500).send({ message: 'Public meal fetch failed', err });
+            }
+        });
+
+
+
+
         // সার্চ, ক্যাটাগরি, প্রাইস রেঞ্জ, পেজিনেশনসহ মিলস রিটার্ন করবে + likes দিয়ে sort করবে
         app.get('/upcoming-meals-public', async (req, res) => {
             const {
@@ -609,7 +702,7 @@ async function run() {
                 minPrice,
                 maxPrice,
                 page = 1,
-                limit = 10,
+                limit = 6,
             } = req.query;
 
             const filter = {};
@@ -635,16 +728,19 @@ async function run() {
 
                 const meals = await upcomingMealsCollection
                     .find(filter)
-                    .sort({ likes: -1 })
+                    .sort({ likes: -1, createdAt: -1 })
                     .skip(skip)
                     .limit(parseInt(limit))
                     .toArray();
 
-                res.send({ meals, totalCount });
+                const isLast = skip + meals.length >= totalCount;
+
+                res.send({ meals, totalCount, isLast });
             } catch (err) {
                 res.status(500).send({ message: 'Public upcoming meals fetch failed', err });
             }
         });
+
 
 
 
@@ -768,29 +864,110 @@ async function run() {
         });
 
 
+        app.get('/meal-requests', verifyFBToken, async (req, res) => {
+            const userEmail = req.query.userEmail;
+
+            if (!userEmail) {
+                return res.status(400).send({ message: 'Missing userEmail' });
+            }
+
+            if (req.decoded.email !== userEmail) {
+                return res.status(403).send({ message: 'Forbidden: You can only access your own requests' });
+            }
+
+            try {
+                const requests = await mealRequestsCollection
+                    .find({ userEmail })
+                    .sort({ requestedAt: -1 })
+                    .toArray();
+
+                res.send(requests);
+            } catch (error) {
+                console.error('Failed to fetch meal requests:', error);
+                res.status(500).send({ message: 'Server error while fetching meal requests' });
+            }
+        });
+
+
+
+        app.get('/upcoming-meal-requests', verifyFBToken, async (req, res) => {
+            const userEmail = req.query.userEmail;
+
+            if (!userEmail) {
+                return res.status(400).send({ message: 'Missing userEmail' });
+            }
+
+            if (req.decoded.email !== userEmail) {
+                return res.status(403).send({ message: 'Forbidden: You can only access your own requests' });
+            }
+
+            const requests = await upcomingMealRequestsCollection
+                .find({ userEmail })
+                .sort({ requestedAt: -1 })
+                .toArray();
+
+
+            res.send(requests);
+        });
+
+
+
+
+
+
+        app.delete('/upcoming-meal-requests/:id', verifyFBToken, async (req, res) => {
+            const id = req.params.id;
+
+            const request = await upcomingMealRequestsCollection.findOne({ _id: new ObjectId(id) });
+
+            if (!request) {
+                return res.status(404).send({ message: 'Meal request not found' });
+            }
+
+            if (req.decoded.email !== request.userEmail) {
+                return res.status(403).send({ message: 'Forbidden: You can only delete your own upcoming meal requests' });
+            }
+
+            const result = await upcomingMealRequestsCollection.deleteOne({ _id: new ObjectId(id) });
+
+
+            res.send({ success: result.deletedCount > 0 });
+        });
+
+
 
 
         // puslish upcoming meals to main meals collection
         app.post('/publish-meal/:id', verifyFBToken, verifyAdmin, async (req, res) => {
-            const id = req.params.id;
-
+            const mealId = req.params.id;
             try {
-                const meal = await upcomingMealsCollection.findOne({ _id: new ObjectId(id) });
+                const upcomingMeal = await db.collection('upcoming_meals').findOne({ _id: new ObjectId(mealId) });
+                if (!upcomingMeal) {
+                    return res.status(404).send({ message: 'Meal not found' });
+                }
 
-                if (!meal) return res.status(404).send({ message: 'Meal not found' });
+                if ((upcomingMeal.likes || 0) < 10) {
+                    return res.status(400).send({ message: 'At least 10 likes required to publish.' });
+                }
 
-                meal.postTime = new Date().toISOString();
-                // Insert to meals collection
-                await mealsCollection.insertOne(meal);
+                // Insert into main meals collection
+                await db.collection('meals').insertOne({
+                    ...upcomingMeal,
+                    rating: 0,
+                    reviews_count: 0,
+                    likes: upcomingMeal.likes || 0,
+                    publishedAt: new Date().toISOString()
+                });
 
-                // Delete from upcoming
-                await upcomingMealsCollection.deleteOne({ _id: new ObjectId(id) });
+                // Remove from upcoming
+                await db.collection('upcoming_meals').deleteOne({ _id: new ObjectId(mealId) });
 
                 res.send({ message: 'Meal published successfully' });
-            } catch (err) {
-                res.status(500).send({ message: 'Publish failed', err });
+            } catch (error) {
+                res.status(500).send({ message: 'Failed to publish meal', error: error.message });
             }
         });
+
 
 
 
@@ -821,31 +998,6 @@ async function run() {
             }
         });
 
-
-
-        app.get('/meal-requests', verifyFBToken, async (req, res) => {
-            const userEmail = req.query.userEmail;
-            if (!userEmail) {
-                return res.status(400).send({ message: 'Missing userEmail query parameter' });
-            }
-
-            // টোকেন থেকে ইউজার ইমেইল মিলে কিনা চেক করাও ভাল হবে
-            if (req.decoded.email !== userEmail) {
-                return res.status(403).send({ message: 'Forbidden: You can only access your own requests' });
-            }
-
-            try {
-                const mealRequests = await mealRequestsCollection
-                    .find({ userEmail })
-                    .sort({ requestedAt: -1 })
-                    .toArray();
-
-                res.send(mealRequests);
-            } catch (error) {
-                console.error('Error fetching meal requests:', error);
-                res.status(500).send({ message: 'Internal Server Error' });
-            }
-        });
 
 
         app.delete('/meal-requests/:id', verifyFBToken, async (req, res) => {
@@ -919,7 +1071,7 @@ async function run() {
 
                 const paidAt = new Date().toISOString();
 
-                // 1️⃣ Insert into payment_history collection
+                // Insert into payment_history collection
                 const paymentHistoryDoc = {
                     userId: user._id,
                     name: user.name,
@@ -937,7 +1089,7 @@ async function run() {
 
                 await paymentHistoryCollection.insertOne(paymentHistoryDoc);
 
-                // 2️⃣ Update user's subscription & badge
+                // Update user's subscription & badge
                 await usersCollection.updateOne(
                     { email },
                     {
@@ -954,6 +1106,702 @@ async function run() {
                 res.status(500).send({ message: 'Payment saving failed', error: err.message });
             }
         });
+
+
+
+
+
+        // ✅ Get payment history of a user
+        app.get('/my-payments', verifyFBToken, async (req, res) => {
+            const email = req.query.email;
+
+            if (!email || req.decoded.email !== email) {
+                return res.status(403).send({ message: 'Forbidden access' });
+            }
+
+            try {
+                const payments = await paymentHistoryCollection
+                    .find({ email })
+                    .sort({ paidAt: -1 })
+                    .toArray();
+
+                res.send(payments);
+            } catch (error) {
+                console.error('❌ Payment history fetch error:', error);
+                res.status(500).send({ message: 'Failed to fetch payment history' });
+            }
+        });
+
+
+
+
+
+        app.get('/admin/all-reviews', verifyFBToken, verifyAdmin, async (req, res) => {
+            try {
+                const page = parseInt(req.query.page) || 1;
+                const limit = parseInt(req.query.limit) || 10;
+                const skip = (page - 1) * limit;
+
+                const meals = await mealsCollection.find({
+                    reviews: { $exists: true, $ne: [] }
+                }).toArray();
+
+                const upcomingMeals = await upcomingMealsCollection.find({
+                    reviews: { $exists: true, $ne: [] }
+                }).toArray();
+
+                const allReviews = [];
+
+                const processReviews = (mealList, source) => {
+                    mealList.forEach(meal => {
+                        if (Array.isArray(meal.reviews)) {
+                            meal.reviews.forEach(review => {
+                                allReviews.push({
+                                    _id: new ObjectId(),
+                                    mealId: meal._id,
+                                    mealTitle: meal.title,
+                                    from: source,
+                                    reviewText: review.review || '',
+                                    reviewerName: review.name || '',
+                                    reviewerEmail: review.email || '',
+                                    reviewerImage: review.image || '',
+                                    likes: meal.likes || 0,
+                                    reviews_count: meal.reviews_count || 0,
+                                    createdAt: review.createdAt || meal.postTime || meal.createdAt
+                                });
+                            });
+                        }
+                    });
+                };
+
+                processReviews(meals, "meals");
+                processReviews(upcomingMeals, "upcoming_meals");
+
+                // Sort newest first
+                allReviews.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+                const total = allReviews.length;
+                const paginated = allReviews.slice(skip, skip + limit);
+
+                res.send({
+                    page,
+                    limit,
+                    total,
+                    totalPages: Math.ceil(total / limit),
+                    reviews: paginated
+                });
+            } catch (err) {
+                res.status(500).send({ message: 'Something went wrong', error: err.message });
+            }
+        });
+
+
+
+        // Delete a review by ID
+        app.delete('/admin/reviews/:mealId/:source/:reviewerEmail', verifyFBToken, verifyAdmin, async (req, res) => {
+            const { mealId, source, reviewerEmail } = req.params;
+
+            const collection = source === 'meals'
+                ? db.collection('meals')
+                : db.collection('upcoming_meals');
+
+            const result = await collection.updateOne(
+                { _id: new ObjectId(mealId) },
+                { $pull: { reviews: { email: reviewerEmail } } }
+            );
+
+            res.send(result);
+        });
+
+
+
+
+
+
+
+
+        // GET all meal requests (with pagination + search + merged)
+        app.get('/admin/all-meal-requests', verifyFBToken, verifyAdmin, async (req, res) => {
+            try {
+                const page = parseInt(req.query.page) || 1;
+                const limit = parseInt(req.query.limit) || 10;
+                const search = req.query.search || '';
+                const skip = (page - 1) * limit;
+                const regex = new RegExp(search, 'i');
+
+                // Fetch from both collections with filtering by userEmail or status
+                const mealRequests = await mealRequestsCollection.aggregate([
+                    {
+                        $addFields: {
+                            mealIdObj: { $toObjectId: "$mealId" } // 👈 convert string to ObjectId
+                        }
+                    },
+                    {
+                        $lookup: {
+                            from: "meals",
+                            localField: "mealIdObj",
+                            foreignField: "_id",
+                            as: "mealInfo"
+                        }
+                    },
+                    { $unwind: "$mealInfo" },
+                    {
+                        $addFields: {
+                            mealTitle: "$mealInfo.title"
+                        }
+                    },
+                    {
+                        $match: {
+                            $or: [
+                                { userEmail: { $regex: regex } },
+                                { status: { $regex: regex } }
+                            ]
+                        }
+                    },
+                    { $project: { mealInfo: 0, mealIdObj: 0 } }
+                ]).toArray();
+
+
+                const upcomingRequests = await upcomingMealRequestsCollection.aggregate([
+                    {
+                        $addFields: {
+                            mealIdObj: { $toObjectId: "$mealId" }
+                        }
+                    },
+                    {
+                        $lookup: {
+                            from: "upcoming_meals",
+                            localField: "mealIdObj",
+                            foreignField: "_id",
+                            as: "mealInfo"
+                        }
+                    },
+                    { $unwind: "$mealInfo" },
+                    {
+                        $addFields: {
+                            mealTitle: "$mealInfo.title"
+                        }
+                    },
+                    {
+                        $match: {
+                            $or: [
+                                { userEmail: { $regex: regex } },
+                                { status: { $regex: regex } }
+                            ]
+                        }
+                    },
+                    { $project: { mealInfo: 0, mealIdObj: 0 } }
+                ]).toArray();
+
+
+                // Add source field for identifying source collection
+                const merged = [
+                    ...mealRequests.map(req => ({
+                        ...req,
+                        from: 'meals'
+                    })),
+                    ...upcomingRequests.map(req => ({
+                        ...req,
+                        from: 'upcoming_meals'
+                    }))
+                ];
+
+                // Sort newest first
+                merged.sort((a, b) => new Date(b.requestedAt) - new Date(a.requestedAt));
+
+                // Pagination
+                const total = merged.length;
+                const totalPages = Math.ceil(total / limit);
+                const paginated = merged.slice(skip, skip + limit);
+
+                // Response
+                res.send({
+                    page,
+                    limit,
+                    total,
+                    totalPages,
+                    requests: paginated
+                });
+
+            } catch (err) {
+                console.error('❌ Error fetching meal requests:', err);
+                res.status(500).send({ message: 'Failed to fetch meal requests', error: err.message });
+            }
+        });
+
+
+
+
+        app.patch('/admin/serve-meal-request/:source/:id', verifyFBToken, verifyAdmin, async (req, res) => {
+            const { source, id } = req.params;
+
+            const collection =
+                source === 'meals' ? mealRequestsCollection : upcomingMealRequestsCollection;
+
+            try {
+                const result = await collection.updateOne(
+                    { _id: new ObjectId(id) },
+                    {
+                        $set: {
+                            status: 'delivered',
+                            servedAt: new Date().toISOString()
+                        }
+                    }
+                );
+
+                if (result.modifiedCount === 0) {
+                    return res.status(404).send({ message: 'Request not found or already served' });
+                }
+
+                res.send({ success: true, message: 'Meal served successfully' });
+            } catch (error) {
+                console.error('❌ Error serving meal:', error);
+                res.status(500).send({ message: 'Failed to serve meal', error: error.message });
+            }
+        });
+
+
+
+
+
+
+        app.get('/my-reviews', verifyFBToken, async (req, res) => {
+            const email = req.query.email;
+
+            if (!email || req.decoded.email !== email) {
+                return res.status(403).send({ message: 'Forbidden Access' });
+            }
+
+            try {
+                const meals = await mealsCollection.find({
+                    reviews: { $elemMatch: { email } }
+                }).toArray();
+
+                const upcomingMeals = await upcomingMealsCollection.find({
+                    reviews: { $elemMatch: { email } }
+                }).toArray();
+
+                const myReviews = [];
+
+                const extractReviews = (mealList, from) => {
+                    mealList.forEach(meal => {
+                        meal.reviews?.forEach(review => {
+                            if (review.email === email) {
+                                myReviews.push({
+                                    mealId: meal._id,
+                                    mealTitle: meal.title,
+                                    mealImage: meal.image,
+                                    from, // 'meals' or 'upcoming_meals'
+                                    reviewText: review.review,
+                                    createdAt: review.createdAt,
+                                    reviewerName: review.name,
+                                    reviewerImage: review.image,
+                                });
+                            }
+                        });
+                    });
+                };
+
+                extractReviews(meals, 'meals');
+                extractReviews(upcomingMeals, 'upcoming_meals');
+
+                myReviews.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+                res.send(myReviews);
+            } catch (error) {
+                console.error('❌ Error fetching user reviews:', error);
+                res.status(500).send({ message: 'Failed to fetch your reviews', error: error.message });
+            }
+        });
+
+
+
+
+
+
+        app.delete('/my-reviews/:mealId/:from', verifyFBToken, async (req, res) => {
+            const email = req.decoded.email;
+            const { mealId, from } = req.params;
+
+            const collection = from === 'meals' ? mealsCollection : upcomingMealsCollection;
+
+            try {
+                const result = await collection.updateOne(
+                    { _id: new ObjectId(mealId) },
+                    {
+                        $pull: { reviews: { email } },
+                        $inc: { reviews_count: -1 }
+                    }
+                );
+
+                res.send({ success: result.modifiedCount > 0 });
+            } catch (error) {
+                console.error('❌ Error deleting review:', error);
+                res.status(500).send({ message: 'Failed to delete review', error: error.message });
+            }
+        });
+
+
+
+
+
+
+        app.patch('/my-reviews/:mealId/:from', verifyFBToken, async (req, res) => {
+            const email = req.decoded.email;
+            const { mealId, from } = req.params;
+            const { newReviewText } = req.body;
+
+            const collection = from === 'meals' ? mealsCollection : upcomingMealsCollection;
+
+            try {
+                const result = await collection.updateOne(
+                    {
+                        _id: new ObjectId(mealId),
+                        "reviews.email": email
+                    },
+                    {
+                        $set: { "reviews.$.review": newReviewText }
+                    }
+                );
+
+                res.send({ success: result.modifiedCount > 0 });
+            } catch (error) {
+                console.error('❌ Error updating review:', error);
+                res.status(500).send({ message: 'Failed to update review', error: error.message });
+            }
+        });
+
+
+
+
+
+        // GET: /admin-dashboard
+        app.get('/admin-dashboard', verifyFBToken, verifyAdmin, async (req, res) => {
+            const { email } = req.query;
+
+            try {
+                const now = new Date();
+                const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+                const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+
+                // Total meals posted by this admin
+                const totalMeals = await mealsCollection.countDocuments({ distributorEmail: email });
+
+                // Global counts
+                const totalUsers = await usersCollection.estimatedDocumentCount();
+                const pendingRequests = await mealRequestsCollection.countDocuments({ status: 'pending' });
+                const pendingUpcomingRequests = await upcomingMealRequestsCollection.countDocuments({ status: 'pending' });
+                const upcomingMealsCount = await upcomingMealsCollection.estimatedDocumentCount();
+
+                // Today’s activities
+                const todayUsers = await usersCollection.aggregate([
+                    {
+                        $addFields: {
+                            createdAtDate: {
+                                $toDate: "$created_At"
+                            }
+                        }
+                    },
+                    {
+                        $match: {
+                            createdAtDate: {
+                                $gte: todayStart,
+                                $lt: todayEnd
+                            }
+                        }
+                    },
+                    {
+                        $count: "count"
+                    }
+                ]).toArray();
+
+                const todayUserCount = todayUsers[0]?.count || 0;
+
+
+                // TODAY'S MEAL REQUESTS
+                const todayMealRequestsAgg = await mealRequestsCollection.aggregate([
+                    {
+                        $addFields: {
+                            reqDate: { $toDate: "$requestedAt" }
+                        }
+                    },
+                    {
+                        $match: {
+                            reqDate: {
+                                $gte: todayStart,
+                                $lt: todayEnd
+                            }
+                        }
+                    },
+                    { $count: "count" }
+                ]).toArray();
+
+                const todayMealRequests = todayMealRequestsAgg[0]?.count || 0;
+
+                // TODAY'S UPCOMING MEAL REQUESTS
+                const todayUpcomingAgg = await upcomingMealRequestsCollection.aggregate([
+                    {
+                        $addFields: {
+                            reqDate: { $toDate: "$requestedAt" }
+                        }
+                    },
+                    {
+                        $match: {
+                            reqDate: {
+                                $gte: todayStart,
+                                $lt: todayEnd
+                            }
+                        }
+                    },
+                    { $count: "count" }
+                ]).toArray();
+
+                const todayUpcomingMealRequests = todayUpcomingAgg[0]?.count || 0;
+
+
+                // Role statistics
+                const userRoles = await usersCollection.aggregate([
+                    { $group: { _id: "$role", count: { $sum: 1 } } }
+                ]).toArray();
+
+                // Most active meal distributor
+                const mostMealsAddedBy = await mealsCollection.aggregate([
+                    { $group: { _id: "$distributorEmail", count: { $sum: 1 } } },
+                    { $sort: { count: -1 } },
+                    { $limit: 1 }
+                ]).toArray();
+
+                // Meal counts by month
+                const mealCountsPerMonth = await mealsCollection.aggregate([
+                    {
+                        $group: {
+                            _id: {
+                                year: { $year: "$createdAt" },
+                                month: { $month: "$createdAt" }
+                            },
+                            count: { $sum: 1 }
+                        }
+                    },
+                    { $sort: { "_id.year": 1, "_id.month": 1 } }
+                ]).toArray();
+
+                // Total reviews (meals + upcoming meals)
+                const totalReviewsMeals = await mealsCollection.aggregate([
+                    {
+                        $project: {
+                            count: { $size: { $ifNull: ["$reviews", []] } }
+                        }
+                    },
+                    {
+                        $group: {
+                            _id: null,
+                            total: { $sum: "$count" }
+                        }
+                    }
+                ]).toArray();
+
+                const totalReviewsUpcoming = await upcomingMealsCollection.aggregate([
+                    {
+                        $project: {
+                            count: { $size: { $ifNull: ["$reviews", []] } }
+                        }
+                    },
+                    {
+                        $group: {
+                            _id: null,
+                            total: { $sum: "$count" }
+                        }
+                    }
+                ]).toArray();
+
+                const totalReviews =
+                    (totalReviewsMeals[0]?.total || 0) +
+                    (totalReviewsUpcoming[0]?.total || 0);
+
+                // Last 3 pending meal requests (from both collections)
+                const last3PendingMealRequests = await mealRequestsCollection
+                    .find({ status: 'pending' })
+                    .sort({ requestedAt: -1 })
+                    .limit(3)
+                    .toArray();
+
+                const last3PendingUpcomingRequests = await upcomingMealRequestsCollection
+                    .find({ status: 'pending' })
+                    .sort({ requestedAt: -1 })
+                    .limit(3)
+                    .toArray();
+
+                // Latest 2 users
+                const latest2Users = await usersCollection
+                    .find({})
+                    .sort({ created_At: -1 })
+                    .limit(2)
+                    .project({ name: 1, email: 1, photo: 1 })
+                    .toArray();
+
+                res.send({
+                    totalMeals,
+                    totalUsers,
+                    pendingRequests,
+                    pendingUpcomingRequests,
+                    upcomingMealsCount,
+                    todayUserCount,
+                    todayMealRequests,
+                    todayUpcomingMealRequests,
+                    userRoles,
+                    mostMealsAddedBy: mostMealsAddedBy[0] || null,
+                    mealCountsPerMonth,
+                    totalReviews,
+                    last3PendingMealRequests,
+                    last3PendingUpcomingRequests,
+                    latest2Users
+                });
+
+            } catch (err) {
+                console.error(err);
+                res.status(500).send({ message: 'Dashboard load failed' });
+            }
+        });
+
+
+
+
+
+
+
+        app.get('/user-dashboard', verifyFBToken, async (req, res) => {
+            const email = req.query.email;
+
+            if (!email || req.decoded.email !== email) {
+                return res.status(403).send({ message: 'Forbidden access' });
+            }
+
+            try {
+                const user = await usersCollection.findOne({ email });
+
+                // ১. Badge Info & Subscription
+                const badge = user?.badge || 'Bronze';
+                const subscription = user?.subscription || 'Bronze';
+
+                // ২. Counts
+                const postedCount = await mealRequestsCollection.countDocuments({ userEmail: email });
+                const upcomingCount = await upcomingMealRequestsCollection.countDocuments({ userEmail: email });
+                const requestedMealCount = postedCount + upcomingCount;
+
+                const totalReviewsMeals = await mealsCollection.countDocuments({ reviews: { $elemMatch: { email } } });
+                const totalReviewsUpcoming = await upcomingMealsCollection.countDocuments({ reviews: { $elemMatch: { email } } });
+                const totalReviews = totalReviewsMeals + totalReviewsUpcoming;
+
+                const totalPayments = await paymentHistoryCollection.countDocuments({ email });
+
+                // ৩. Recent Requested Meals
+                const postedMeals = await mealRequestsCollection
+                    .find({ userEmail: email })
+                    .sort({ requestedAt: -1 })
+                    .limit(3)
+                    .toArray();
+
+                const upcomingMeals = await upcomingMealRequestsCollection
+                    .find({ userEmail: email })
+                    .sort({ requestedAt: -1 })
+                    .limit(3)
+                    .toArray();
+
+                // Meal titles fetch
+                const postedMealIds = postedMeals.map(m => new ObjectId(m.mealId));
+                const upcomingMealIds = upcomingMeals.map(m => new ObjectId(m.mealId));
+
+                const postedMealDocs = await mealsCollection
+                    .find({ _id: { $in: postedMealIds } })
+                    .project({ _id: 1, title: 1 })
+                    .toArray();
+
+                const upcomingMealDocs = await upcomingMealsCollection
+                    .find({ _id: { $in: upcomingMealIds } })
+                    .project({ _id: 1, title: 1 })
+                    .toArray();
+
+                const postedMealMap = Object.fromEntries(postedMealDocs.map(m => [m._id.toString(), m.title]));
+                const upcomingMealMap = Object.fromEntries(upcomingMealDocs.map(m => [m._id.toString(), m.title]));
+
+                // Combine and format
+                const recentRequestedMeals = [
+                    ...postedMeals.map(m => ({
+                        mealId: m.mealId,
+                        title: postedMealMap[m.mealId] || 'Unknown Meal',
+                        type: 'posted',
+                        status: m.status,
+                        requestedAt: m.requestedAt,
+                    })),
+                    ...upcomingMeals.map(m => ({
+                        mealId: m.mealId,
+                        title: upcomingMealMap[m.mealId] || 'Unknown Upcoming Meal',
+                        type: 'upcoming',
+                        status: m.status,
+                        requestedAt: m.requestedAt,
+                    })),
+                ].sort((a, b) => new Date(b.requestedAt) - new Date(a.requestedAt)).slice(0, 3);
+
+                // ৪. Recent Reviews
+                const extractRecentReviews = (meals, from) =>
+                    meals.flatMap(meal =>
+                        (meal.reviews || [])
+                            .filter(r => r.email === email)
+                            .map(r => ({
+                                mealId: meal._id,
+                                mealTitle: meal.title,
+                                from,
+                                reviewText: r.review,
+                                createdAt: r.createdAt
+                            }))
+                    );
+
+                const reviewedMeals = await mealsCollection
+                    .find({ reviews: { $elemMatch: { email } } })
+                    .limit(10).toArray();
+
+                const reviewedUpcomingMeals = await upcomingMealsCollection
+                    .find({ reviews: { $elemMatch: { email } } })
+                    .limit(10).toArray();
+
+                let allReviews = [
+                    ...extractRecentReviews(reviewedMeals, 'meals'),
+                    ...extractRecentReviews(reviewedUpcomingMeals, 'upcoming_meals'),
+                ];
+
+                allReviews.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+                const recentReviews = allReviews.slice(0, 2);
+
+                // ✅ Final Response
+                res.send({
+                    badge,
+                    subscription,
+                    requestedMealCount,
+                    totalReviews,
+                    totalPayments,
+                    recentRequestedMeals,
+                    recentReviews,
+                    userInfo: {
+                        name: user?.name || 'User',
+                        email: user?.email,
+                        photo: user?.photo || '',
+                    }
+                });
+
+            } catch (error) {
+                console.error('❌ Dashboard Load Error:', error);
+                res.status(500).send({ message: 'Failed to load dashboard data' });
+            }
+        });
+
+
+
+
+
+
+
+
+
 
 
 
