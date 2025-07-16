@@ -257,6 +257,41 @@ async function run() {
 
 
 
+        // GET /meals-by-category?category=Breakfast&limit=8&type=meal
+        app.get('/meals-by-category', async (req, res) => {
+            try {
+                const { category = 'Breakfast', limit = 8, type = 'meal' } = req.query;
+
+                const parsedLimit = parseInt(limit);
+                const isAll = parsedLimit === 0;
+
+                const collection = type === 'meal' ? mealsCollection : upcomingMealsCollection;
+
+                const query = category === 'All' ? {} : { category };
+
+                // sort descending by createdAt if field exists, fallback _id descending
+                const sortObj = { createdAt: -1 };
+                const results = await collection
+                    .find(query)
+                    .sort(sortObj)
+                    .limit(isAll ? 0 : parsedLimit)
+                    .toArray();
+
+                // response shape keeping previous structure
+                const response = {
+                    meals: type === 'meal' ? results : [],
+                    upcomingMeals: type === 'upcoming' ? results : [],
+                };
+
+                res.status(200).json(response);
+            } catch (error) {
+                console.error('Error in /meals-by-category:', error);
+                res.status(500).json({ error: 'Internal server error' });
+            }
+        });
+
+
+
         // 🔍 Live Search Meals (title, ingredients, category) from both collections
         app.get('/search-meals', async (req, res) => {
             const query = req.query.q?.toLowerCase();
@@ -306,7 +341,7 @@ async function run() {
 
 
         // Get current logged-in user from token
-        app.get('/current/user', verifyFBToken, async (req, res) => {
+        app.get('/current-user', verifyFBToken, async (req, res) => {
             const email = req.decoded.email;
             try {
                 const user = await usersCollection.findOne({ email });
@@ -440,6 +475,44 @@ async function run() {
                 res.status(500).send({ message: 'Failed to fetch filter info', error });
             }
         });
+
+
+
+
+
+
+        // ১. ক্যাটাগরি, minPrice, maxPrice ফেরত দিবে (filter info)
+        app.get('/upcoming-meals-filter', async (req, res) => {
+            try {
+                const categoryResult = await upcomingMealsCollection.aggregate([
+                    { $group: { _id: '$category' } },
+                    { $project: { _id: 0, category: '$_id' } }
+                ]).toArray();
+
+                const categories = categoryResult.map(c => c.category);
+
+                const priceStats = await upcomingMealsCollection.aggregate([
+                    {
+                        $group: {
+                            _id: null,
+                            minPrice: { $min: '$price' },
+                            maxPrice: { $max: '$price' }
+                        }
+                    }
+                ]).toArray();
+
+                const minPrice = priceStats.length > 0 ? priceStats[0].minPrice : 0;
+                const maxPrice = priceStats.length > 0 ? priceStats[0].maxPrice : 1000;
+
+                res.send({ categories, minPrice, maxPrice });
+            } catch (error) {
+                console.error('Failed to fetch upcoming meals filter info:', error);
+                res.status(500).send({ message: 'Failed to fetch filter info', error });
+            }
+        });
+
+
+
 
 
 
@@ -623,41 +696,6 @@ async function run() {
             }
         });
 
-
-
-
-
-
-
-        // ১. ক্যাটাগরি, minPrice, maxPrice ফেরত দিবে (filter info)
-        app.get('/upcoming-meals-filter', async (req, res) => {
-            try {
-                const categoryResult = await upcomingMealsCollection.aggregate([
-                    { $group: { _id: '$category' } },
-                    { $project: { _id: 0, category: '$_id' } }
-                ]).toArray();
-
-                const categories = categoryResult.map(c => c.category);
-
-                const priceStats = await upcomingMealsCollection.aggregate([
-                    {
-                        $group: {
-                            _id: null,
-                            minPrice: { $min: '$price' },
-                            maxPrice: { $max: '$price' }
-                        }
-                    }
-                ]).toArray();
-
-                const minPrice = priceStats.length > 0 ? priceStats[0].minPrice : 0;
-                const maxPrice = priceStats.length > 0 ? priceStats[0].maxPrice : 1000;
-
-                res.send({ categories, minPrice, maxPrice });
-            } catch (error) {
-                console.error('Failed to fetch upcoming meals filter info:', error);
-                res.status(500).send({ message: 'Failed to fetch filter info', error });
-            }
-        });
 
 
 
@@ -1772,7 +1810,7 @@ async function run() {
                 allReviews.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
                 const recentReviews = allReviews.slice(0, 2);
 
-                // ✅ Final Response
+                // Final Response
                 res.send({
                     badge,
                     subscription,
@@ -1795,13 +1833,79 @@ async function run() {
         });
 
 
+        // routes/meals.js
+        app.get('/meals-popular', async (req, res) => {
+            try {
+                const popularMeals = await mealsCollection.find({})
+                    .sort({ likes: -1, ordersCount: -1, reviewsCount: -1 })
+                    .limit(6)
+                    .project({
+                        title: 1,
+                        image: 1,
+                        price: 1,
+                        likes: 1,
+                        reviewsCount: 1,
+                        distributorName: 1
+                    })
+                    .toArray();
+
+                res.status(200).json(popularMeals);
+            } catch (error) {
+                console.error('❌ Error fetching popular meals:', error.message);
+                res.status(500).json({ error: 'Failed to fetch popular meals' });
+            }
+        });
 
 
 
+        // routes/reviews.js
+        app.get('/reviews-featured', async (req, res) => {
+            try {
+                const mealsFeatured = await mealsCollection.aggregate([
+                    { $unwind: "$reviews" },
+                    { $replaceRoot: { newRoot: "$reviews" } },
+                    { $sort: { createdAt: -1 } },
+                ]).toArray();
+
+                const upcomingFeatured = await upcomingMealsCollection.aggregate([
+                    { $unwind: "$reviews" },
+                    { $replaceRoot: { newRoot: "$reviews" } },
+                    { $sort: { createdAt: -1 } },
+                ]).toArray();
+
+
+                const combinedReviews = [...mealsFeatured, ...upcomingFeatured];
+
+                const topReviews = combinedReviews
+                    .filter(r => r.review && r.review.trim() !== "")  
+                    .sort((a, b) => (b.likes || 0) - (a.likes || 0) || new Date(b.createdAt) - new Date(a.createdAt))
+                    .slice(0, 5);
+
+                res.status(200).json(topReviews);
+            } catch (error) {
+                console.error('❌ Error fetching featured reviews:', error);
+                res.status(500).json({ error: 'Failed to fetch featured reviews' });
+            }
+        });
 
 
 
+        // routes/faqs.js
+        app.get('/faqs', async (req, res) => {
+            try {
+                const faqs = await db.collection('faqs')
+                    .find({})
+                    .sort({ createdAt: -1 })
+                    .limit(10)
+                    .project({ question: 1, answer: 1 })
+                    .toArray();
 
+                res.status(200).json(faqs);
+            } catch (error) {
+                console.error('❌ Error fetching FAQs:', error.message);
+                res.status(500).json({ error: 'Failed to fetch FAQs' });
+            }
+        });
 
 
 
