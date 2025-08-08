@@ -6,9 +6,7 @@
   Built with <strong>Express.js, MongoDB, Firebase Admin, Stripe</strong> and follows secure role-based architecture.
 </p>
 
-<p align="center">
-  🔗 <a href="https://hostel-meals-server.vercel.app" target="_blank">Live Server URL</a>
-</p>
+
 
 <hr>
 
