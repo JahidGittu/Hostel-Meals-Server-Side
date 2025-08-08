@@ -1,44 +1,82 @@
-# 🍽️ Hostel Meals – Backend Server (Express.js + MongoDB)
+<h1 align="center">🍽️ Hostel Meals – Backend Server (Express.js + MongoDB)</h1>
 
-**Hostel Meals** is the backend API for a university hostel meal and review management system built using the MERN Stack. This Express.js server manages users, meals, reviews, payments, roles, and admin functionalities securely and efficiently.
+<p align="center">
+  A complete backend API for university hostel meal & review management system.
+  <br>
+  Built with <strong>Express.js, MongoDB, Firebase Admin, Stripe</strong> and follows secure role-based architecture.
+</p>
 
----
+<p align="center">
+  🔗 <a href="https://hostel-meals-server.vercel.app" target="_blank">Live Server URL</a>
+</p>
 
-## 🌍 Live Server URL
+<hr>
 
-**🔗** https://hostel-meals-server.vercel.app
+<h2>🚀 Features at a Glance</h2>
 
----
+<ul>
+  <li>🔐 Firebase Token Verification using Admin SDK</li>
+  <li>🧑‍🍳 Admin Meal Management (Add, Update, Delete)</li>
+  <li>💬 Review System with Ratings & Deletion</li>
+  <li>🥘 Upcoming Meals with Publish/Unpublish Controls</li>
+  <li>👍 Meal Likes & Meal Request System (Role-Based)</li>
+  <li>💳 Stripe Payment Integration for Premium Badge</li>
+  <li>🧾 Payment History Tracking & Badge Assignment</li>
+  <li>🧑‍🎓 Role-Based Access Control (User / Admin)</li>
+  <li>🔎 Server-Side Search on Meals & Users</li>
+  <li>📊 Pagination & Sorting Support</li>
+  <li>🔐 Protected API Routes with Environment Configuration</li>
+</ul>
 
-## 🚀 Features at a Glance
+<hr>
 
-- 🔐 Firebase Token Verification with Admin SDK
-- 🧑‍🍳 Admin Meal Management (Add, Update, Delete)
-- 💬 Review System with Rating & Deletion
-- 🥘 Upcoming Meals with Publishing Control
-- 👍 Meal Likes & Request System (Role-Based)
-- 💳 Stripe Payment Integration
-- 🧾 Payment History & Badge Assignment
-- 🧑‍🎓 Role-Based Access Control (User / Admin)
-- 🔎 Server-Side Search (User & Meals)
-- 📊 Pagination & Sorting
-- 🔧 Environment-secured config and protected routes
+<h2>🛠️ Technology Stack</h2>
 
----
+<table>
+  <tr><td><strong>Feature</strong></td><td><strong>Tech / Tool</strong></td></tr>
+  <tr><td>Server Framework</td><td>Express.js</td></tr>
+  <tr><td>Database</td><td>MongoDB</td></tr>
+  <tr><td>Authentication</td><td>Firebase Admin SDK</td></tr>
+  <tr><td>Payment Gateway</td><td>Stripe</td></tr>
+  <tr><td>Environment Config</td><td>dotenv</td></tr>
+  <tr><td>Cross-Origin Requests</td><td>CORS</td></tr>
+  <tr><td>Dev Monitoring</td><td>Nodemon</td></tr>
+</table>
 
-## 🛠️ Technology Stack
+<hr>
 
-| Feature               | Tech/Tool                     |
-|------------------------|-------------------------------|
-| Server Framework       | Express.js                    |
-| Database               | MongoDB                       |
-| Auth Verification      | Firebase Admin SDK            |
-| Payment Gateway        | Stripe                        |
-| Environment Config     | dotenv                        |
-| Cross-Origin Requests  | CORS                          |
-| Dev Monitoring         | Nodemon                       |
+<h2>📁 Folder Structure</h2>
 
----
+```bash
+Hostel-Meals-Server/
+├── index.js               # Main entry point
+├── convertKey.js          # Firebase private key converter
+├── package.json           # Dependencies & scripts
+├── vercel.json            # Vercel deployment config
+├── .env                   # Environment variables
+├── /routes                # All route handlers
+│   ├── meals.routes.js
+│   ├── reviews.routes.js
+│   ├── users.routes.js
+│   ├── payments.routes.js
+│   └── ...
+├── /controllers           # Controller functions
+├── /middleware            # Auth, role, error handling
+├── /models                # Mongoose models
+└── /utils                 # Helper functions
 
-## 📁 Project Structure
+```
+<hr>
 
+```bash
+# Clone the repo
+git clone https://github.com/JahidGittu/Hostel-Meals-Server-Side.git
+
+# Go to the project directory
+cd Hostel-Meals-Server-Side
+
+# Install dependencies
+npm install
+
+# Start the server
+npm run dev
