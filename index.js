@@ -378,14 +378,30 @@ async function run() {
 
 
 
-        // Update user profile
+  // Update user profile (Admin & User)
 app.put('/update-profile', verifyFBToken, async (req, res) => {
     try {
-        const email = req.decoded.email.toLowerCase();
-        const { name, phone, address } = req.body;
+        const email = req.decoded.email.toLowerCase(); // লগইন করা ইউজার
+        const { targetEmail, name, phone, address } = req.body;
 
         if (!name && !phone && !address) {
             return res.status(400).send({ message: "No data to update" });
+        }
+
+        const currentUser = await usersCollection.findOne({ email });
+        if (!currentUser) return res.status(404).send({ message: "User not found" });
+
+        let updateEmail;
+
+        // যদি admin হয় → targetEmail থাকলে অন্যের, না থাকলে নিজের
+        // যদি normal user হয় → সবসময় নিজের প্রোফাইল
+        if (currentUser.role === 'admin') {
+            updateEmail = targetEmail ? targetEmail.toLowerCase() : email;
+        } else {
+            updateEmail = email;
+            if (targetEmail && targetEmail.toLowerCase() !== email) {
+                return res.status(403).send({ message: "Unauthorized to update other user's profile" });
+            }
         }
 
         const updateDoc = {};
@@ -394,19 +410,19 @@ app.put('/update-profile', verifyFBToken, async (req, res) => {
         if (address) updateDoc.address = address;
 
         const updatedUser = await usersCollection.findOneAndUpdate(
-            { email },
+            { email: updateEmail },
             { $set: updateDoc },
-            { returnDocument: 'after' } // MongoDB v4+ syntax for new document
+            { returnDocument: 'after' }
         );
 
         if (!updatedUser.value) {
-            return res.status(404).send({ message: "User not found" });
+            return res.status(404).send({ message: "Target user not found" });
         }
 
-        res.send(updatedUser.value);
+        res.send({ success: true, updatedUser: updatedUser.value });
     } catch (err) {
         console.error('Error updating profile:', err);
-        res.status(500).send({ message: 'Failed to update profile', error: err });
+        res.status(500).send({ message: 'Failed to update profile', error: err.message });
     }
 });
 
