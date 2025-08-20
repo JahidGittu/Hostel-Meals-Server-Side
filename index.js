@@ -27,16 +27,6 @@ app.use((req, res, next) => {
     next();
 });
 
-// ==================== HTTPS Redirect ====================
-if (process.env.NODE_ENV === "production") {
-    app.use((req, res, next) => {
-        if (req.method === 'OPTIONS') return next(); // preflight skip
-        if (req.header("x-forwarded-proto") !== "https") {
-            return res.redirect(`https://${req.headers.host}${req.url}`);
-        }
-        next();
-    });
-}
 
 
 // ==================== Content Security Policy ====================
