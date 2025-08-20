@@ -378,6 +378,40 @@ async function run() {
 
 
 
+        // Update user profile
+app.put('/update-profile', verifyFBToken, async (req, res) => {
+    try {
+        const email = req.decoded.email.toLowerCase();
+        const { name, phone, address } = req.body;
+
+        if (!name && !phone && !address) {
+            return res.status(400).send({ message: "No data to update" });
+        }
+
+        const updateDoc = {};
+        if (name) updateDoc.name = name;
+        if (phone) updateDoc.phone = phone;
+        if (address) updateDoc.address = address;
+
+        const updatedUser = await usersCollection.findOneAndUpdate(
+            { email },
+            { $set: updateDoc },
+            { returnDocument: 'after' } // MongoDB v4+ syntax for new document
+        );
+
+        if (!updatedUser.value) {
+            return res.status(404).send({ message: "User not found" });
+        }
+
+        res.send(updatedUser.value);
+    } catch (err) {
+        console.error('Error updating profile:', err);
+        res.status(500).send({ message: 'Failed to update profile', error: err });
+    }
+});
+
+
+
         //         app.get('/current-user', async (req, res) => {
         //   try {
         //     const email = req.query.email;
