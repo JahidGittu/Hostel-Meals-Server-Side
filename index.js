@@ -39,19 +39,18 @@ if (process.env.NODE_ENV === "production") {
 
 // ==================== Content Security Policy ====================
 app.use((req, res, next) => {
-    res.setHeader(
-        "Content-Security-Policy",
-        `
-        default-src 'self';
-        script-src 'self' https://js.stripe.com blob: 'unsafe-eval';
-        style-src 'self' 'unsafe-inline' https://js.stripe.com;
-        frame-src https://js.stripe.com https://hooks.stripe.com;
-        img-src 'self' data: https://*.stripe.com;
-        connect-src 'self' https://api.stripe.com;
-        `
-    );
-    next();
+  res.setHeader(
+    "Content-Security-Policy",
+    "default-src 'self'; " +
+    "script-src 'self' https://js.stripe.com blob: 'unsafe-eval'; " +
+    "style-src 'self' 'unsafe-inline' https://js.stripe.com; " +
+    "frame-src https://js.stripe.com https://hooks.stripe.com; " +
+    "img-src 'self' data: https://*.stripe.com; " +
+    "connect-src 'self' https://api.stripe.com;"
+  );
+  next();
 });
+
 
 
 const decoded = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString('utf8')
