@@ -11,7 +11,7 @@ const port = process.env.PORT || 5000;
 
 // Middleware
 const corsOptions = {
-    origin: ['http://localhost:5173'],
+    origin: ['http://localhost:5173','https://hostel-management-system-pro.web.app/'],
     credentials: true, // allow cookies and headers
 };
 
@@ -1569,195 +1569,161 @@ async function run() {
 
 
 
+// GET: /admin-dashboard
+app.get('/admin-dashboard', verifyFBToken, verifyAdmin, async (req, res) => {
+    const { email } = req.query;
 
+    try {
+        const now = new Date();
+        const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
 
-        // GET: /admin-dashboard
-        app.get('/admin-dashboard', verifyFBToken, verifyAdmin, async (req, res) => {
-            const { email } = req.query;
+        // Total meals posted by this admin
+        const totalMeals = await mealsCollection.countDocuments({ distributorEmail: email });
 
-            try {
-                const now = new Date();
-                const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-                const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+        // Global counts
+        const totalUsers = await usersCollection.estimatedDocumentCount();
+        const pendingRequests = await mealRequestsCollection.countDocuments({ status: 'pending' });
+        const pendingUpcomingRequests = await upcomingMealRequestsCollection.countDocuments({ status: 'pending' });
+        const upcomingMealsCount = await upcomingMealsCollection.estimatedDocumentCount();
 
-                // Total meals posted by this admin
-                const totalMeals = await mealsCollection.countDocuments({ distributorEmail: email });
-
-                // Global counts
-                const totalUsers = await usersCollection.estimatedDocumentCount();
-                const pendingRequests = await mealRequestsCollection.countDocuments({ status: 'pending' });
-                const pendingUpcomingRequests = await upcomingMealRequestsCollection.countDocuments({ status: 'pending' });
-                const upcomingMealsCount = await upcomingMealsCollection.estimatedDocumentCount();
-
-                // Today’s activities
-                const todayUsers = await usersCollection.aggregate([
-                    {
-                        $addFields: {
-                            createdAtDate: {
-                                $toDate: "$created_At"
-                            }
-                        }
-                    },
-                    {
-                        $match: {
-                            createdAtDate: {
-                                $gte: todayStart,
-                                $lt: todayEnd
-                            }
-                        }
-                    },
-                    {
-                        $count: "count"
+        // Today’s new users
+        const todayUsers = await usersCollection.aggregate([
+            {
+                $addFields: {
+                    createdAtDate: {
+                        $cond: [
+                            { $ifNull: ["$created_At", false] },
+                            { $toDate: "$created_At" },
+                            new Date(0)
+                        ]
                     }
-                ]).toArray();
-
-                const todayUserCount = todayUsers[0]?.count || 0;
-
-
-                // TODAY'S MEAL REQUESTS
-                const todayMealRequestsAgg = await mealRequestsCollection.aggregate([
-                    {
-                        $addFields: {
-                            reqDate: { $toDate: "$requestedAt" }
-                        }
-                    },
-                    {
-                        $match: {
-                            reqDate: {
-                                $gte: todayStart,
-                                $lt: todayEnd
-                            }
-                        }
-                    },
-                    { $count: "count" }
-                ]).toArray();
-
-                const todayMealRequests = todayMealRequestsAgg[0]?.count || 0;
-
-                // TODAY'S UPCOMING MEAL REQUESTS
-                const todayUpcomingAgg = await upcomingMealRequestsCollection.aggregate([
-                    {
-                        $addFields: {
-                            reqDate: { $toDate: "$requestedAt" }
-                        }
-                    },
-                    {
-                        $match: {
-                            reqDate: {
-                                $gte: todayStart,
-                                $lt: todayEnd
-                            }
-                        }
-                    },
-                    { $count: "count" }
-                ]).toArray();
-
-                const todayUpcomingMealRequests = todayUpcomingAgg[0]?.count || 0;
-
-
-                // Role statistics
-                const userRoles = await usersCollection.aggregate([
-                    { $group: { _id: "$role", count: { $sum: 1 } } }
-                ]).toArray();
-
-                // Most active meal distributor
-                const mostMealsAddedBy = await mealsCollection.aggregate([
-                    { $group: { _id: "$distributorEmail", count: { $sum: 1 } } },
-                    { $sort: { count: -1 } },
-                    { $limit: 1 }
-                ]).toArray();
-
-                // Meal counts by month
-                const mealCountsPerMonth = await mealsCollection.aggregate([
-                    {
-                        $group: {
-                            _id: {
-                                year: { $year: "$createdAt" },
-                                month: { $month: "$createdAt" }
-                            },
-                            count: { $sum: 1 }
-                        }
-                    },
-                    { $sort: { "_id.year": 1, "_id.month": 1 } }
-                ]).toArray();
-
-                // Total reviews (meals + upcoming meals)
-                const totalReviewsMeals = await mealsCollection.aggregate([
-                    {
-                        $project: {
-                            count: { $size: { $ifNull: ["$reviews", []] } }
-                        }
-                    },
-                    {
-                        $group: {
-                            _id: null,
-                            total: { $sum: "$count" }
-                        }
+                }
+            },
+            {
+                $match: {
+                    createdAtDate: {
+                        $gte: todayStart,
+                        $lt: todayEnd
                     }
-                ]).toArray();
+                }
+            },
+            { $count: "count" }
+        ]).toArray();
+        const todayUserCount = todayUsers[0]?.count || 0;
 
-                const totalReviewsUpcoming = await upcomingMealsCollection.aggregate([
-                    {
-                        $project: {
-                            count: { $size: { $ifNull: ["$reviews", []] } }
-                        }
+        // Today’s meal requests
+        const todayMealRequestsAgg = await mealRequestsCollection.aggregate([
+            {
+                $addFields: {
+                    reqDate: { $cond: [{ $ifNull: ["$requestedAt", false] }, { $toDate: "$requestedAt" }, new Date(0)] }
+                }
+            },
+            { $match: { reqDate: { $gte: todayStart, $lt: todayEnd } } },
+            { $count: "count" }
+        ]).toArray();
+        const todayMealRequests = todayMealRequestsAgg[0]?.count || 0;
+
+        // Today’s upcoming meal requests
+        const todayUpcomingAgg = await upcomingMealRequestsCollection.aggregate([
+            {
+                $addFields: {
+                    reqDate: { $cond: [{ $ifNull: ["$requestedAt", false] }, { $toDate: "$requestedAt" }, new Date(0)] }
+                }
+            },
+            { $match: { reqDate: { $gte: todayStart, $lt: todayEnd } } },
+            { $count: "count" }
+        ]).toArray();
+        const todayUpcomingMealRequests = todayUpcomingAgg[0]?.count || 0;
+
+        // Role statistics
+        const userRoles = await usersCollection.aggregate([
+            { $group: { _id: "$role", count: { $sum: 1 } } }
+        ]).toArray();
+
+        // Most active meal distributor
+        const mostMealsAddedBy = await mealsCollection.aggregate([
+            { $group: { _id: "$distributorEmail", count: { $sum: 1 } } },
+            { $sort: { count: -1 } },
+            { $limit: 1 }
+        ]).toArray();
+
+        // Meal counts by month (using postTime)
+        const mealCountsPerMonth = await mealsCollection.aggregate([
+            {
+                $addFields: {
+                    postDate: { $cond: [{ $ifNull: ["$postTime", false] }, { $toDate: "$postTime" }, new Date(0)] }
+                }
+            },
+            {
+                $group: {
+                    _id: {
+                        year: { $year: "$postDate" },
+                        month: { $month: "$postDate" }
                     },
-                    {
-                        $group: {
-                            _id: null,
-                            total: { $sum: "$count" }
-                        }
-                    }
-                ]).toArray();
+                    count: { $sum: 1 }
+                }
+            },
+            { $sort: { "_id.year": 1, "_id.month": 1 } }
+        ]).toArray();
 
-                const totalReviews =
-                    (totalReviewsMeals[0]?.total || 0) +
-                    (totalReviewsUpcoming[0]?.total || 0);
+        // Total reviews (meals + upcoming meals)
+        const totalReviewsMeals = await mealsCollection.aggregate([
+            { $project: { count: { $size: { $ifNull: ["$reviews", []] } } } },
+            { $group: { _id: null, total: { $sum: "$count" } } }
+        ]).toArray();
 
-                // Last 3 pending meal requests (from both collections)
-                const last3PendingMealRequests = await mealRequestsCollection
-                    .find({ status: 'pending' })
-                    .sort({ requestedAt: -1 })
-                    .limit(3)
-                    .toArray();
+        const totalReviewsUpcoming = await upcomingMealsCollection.aggregate([
+            { $project: { count: { $size: { $ifNull: ["$reviews", []] } } } },
+            { $group: { _id: null, total: { $sum: "$count" } } }
+        ]).toArray();
 
-                const last3PendingUpcomingRequests = await upcomingMealRequestsCollection
-                    .find({ status: 'pending' })
-                    .sort({ requestedAt: -1 })
-                    .limit(3)
-                    .toArray();
+        const totalReviews = (totalReviewsMeals[0]?.total || 0) + (totalReviewsUpcoming[0]?.total || 0);
 
-                // Latest 2 users
-                const latest2Users = await usersCollection
-                    .find({})
-                    .sort({ created_At: -1 })
-                    .limit(2)
-                    .project({ name: 1, email: 1, photo: 1 })
-                    .toArray();
+        // Last 3 pending meal requests
+        const last3PendingMealRequests = await mealRequestsCollection
+            .find({ status: 'pending' })
+            .sort({ requestedAt: -1 })
+            .limit(3)
+            .toArray();
 
-                res.send({
-                    totalMeals,
-                    totalUsers,
-                    pendingRequests,
-                    pendingUpcomingRequests,
-                    upcomingMealsCount,
-                    todayUserCount,
-                    todayMealRequests,
-                    todayUpcomingMealRequests,
-                    userRoles,
-                    mostMealsAddedBy: mostMealsAddedBy[0] || null,
-                    mealCountsPerMonth,
-                    totalReviews,
-                    last3PendingMealRequests,
-                    last3PendingUpcomingRequests,
-                    latest2Users
-                });
+        const last3PendingUpcomingRequests = await upcomingMealRequestsCollection
+            .find({ status: 'pending' })
+            .sort({ requestedAt: -1 })
+            .limit(3)
+            .toArray();
 
-            } catch (err) {
-                console.error(err);
-                res.status(500).send({ message: 'Dashboard load failed' });
-            }
+        // Latest 2 users
+        const latest2Users = await usersCollection
+            .find({})
+            .sort({ created_At: -1 })
+            .limit(2)
+            .project({ name: 1, email: 1, photo: 1 })
+            .toArray();
+
+        res.send({
+            totalMeals,
+            totalUsers,
+            pendingRequests,
+            pendingUpcomingRequests,
+            upcomingMealsCount,
+            todayUserCount,
+            todayMealRequests,
+            todayUpcomingMealRequests,
+            userRoles,
+            mostMealsAddedBy: mostMealsAddedBy[0] || null,
+            mealCountsPerMonth,
+            totalReviews,
+            last3PendingMealRequests,
+            last3PendingUpcomingRequests,
+            latest2Users
         });
+
+    } catch (err) {
+        console.error("Admin Dashboard Error:", err);
+        res.status(500).send({ message: 'Dashboard load failed' });
+    }
+});
 
 
 

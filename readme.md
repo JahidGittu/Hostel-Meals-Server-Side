@@ -77,4 +77,3 @@ cd Hostel-Meals-Server-Side
 npm install
 
 # Start the server
-npm run dev
